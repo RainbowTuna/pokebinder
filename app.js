@@ -1,10 +1,9 @@
-// PokéBinder – scan Pokémon cards and keep digital binders.
-// Card data & images: TCGdex (https://tcgdex.dev), free, no API key.
+// PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
+// Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js';
+import * as store from './data.js?v=7';
+import * as catalog from './catalog.js?v=7';
 
-const API = 'https://api.tcgdex.net/v2';
-const SETS_KEY = 'pkbinder.sets.v2';
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
 
@@ -12,160 +11,83 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// Card ids: English cards use TCGdex ids as-is ("sv03.5-025"), Japanese ones are
-// prefixed ("ja:SV2a-025"), and cards added by hand are "custom:<uuid>".
-const langOf = id => id.startsWith('ja:') ? 'ja' : id.startsWith('custom:') ? 'custom' : 'en';
-const rawId = id => id.replace(/^(ja|custom):/, '');
-const setIdOf = id => {
-  const raw = rawId(id);
-  const set = raw.slice(0, raw.lastIndexOf('-'));
-  return langOf(id) === 'ja' ? `ja:${set}` : set;
+// Card ids: catalog cards are "tp:<TCGplayer product id>", cards added by hand "custom:<uuid>".
+// Older versions used TCGdex ids ("sv03.5-025", "ja:SV2a-025"); those are upgraded once the catalog loads.
+const isLegacy = id => !id.startsWith('tp:') && !id.startsWith('custom:');
+const imgUrl = (card, size = 'low') => {
+  const src = card.image || '';
+  if (!src || src.startsWith('data:')) return src;
+  if (src.includes('tcgplayer-cdn')) return size === 'high' ? src.replace('_200w', '_in_1000x1000') : src;
+  return `${src}/${size}.webp`; // TCGdex picture (cards added before the catalog)
 };
-const imgUrl = (card, q = 'low') => !card.image ? '' : card.image.startsWith('data:') ? card.image : `${card.image}/${q}.webp`;
 const hasJapanese = s => /[぀-ヿ一-鿿]/.test(s);
 
-const ui = { tab: 'add', view: 'shelf', binderId: null, results: null, modal: null, lastQuery: null, lastScan: null };
+const ui = { tab: 'add', view: 'shelf', binderId: null, results: null, modal: null, lastQuery: null, lastScan: null, list: null };
 let lang = localStorage.getItem(LANG_KEY) === 'ja' ? 'ja' : 'en';
 
-// Every card we've seen from the API, so tiles can open the detail modal.
+let setsCache = null; // catalog sets, once loaded
+const getSets = async () => (setsCache = await catalog.sets());
+const langOfCard = c => c?.lang || setsCache?.byId.get(c?.setId)?.lang ||
+  (String(c?.id).startsWith('ja:') || String(c?.setId).startsWith('custom:ja') ? 'ja' : 'en');
+
+// Cards shown on screen that aren't in the catalog (older or hand-added ones), so tiles can open them.
 const seen = new Map();
-const remember = cards => cards.forEach(c => seen.set(c.id, { ...seen.get(c.id), ...c }));
+const remember = cards => cards.forEach(c => { if (!catalog.cardById(c.id)) seen.set(c.id, { ...seen.get(c.id), ...c }); });
 
-// ---------- card database ----------
-async function api(path, language = 'en') {
-  const r = await fetch(`${API}/${language}${path}`);
-  if (!r.ok) throw new Error(`Card database error (${r.status})`);
-  return r.json();
-}
+const sameNumber = (a, b) => {
+  const x = parseInt(a, 10), y = parseInt(b, 10);
+  return (!isNaN(x) && x === y) || String(a).toLowerCase() === String(b).toLowerCase();
+};
+// "Flabébé ex" → "flabebe ex", for forgiving name matching.
+const nameKey = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
 
-let setsCache = null;
-async function getSets() {
-  if (setsCache) return setsCache;
-  let c = null;
-  try { c = JSON.parse(localStorage.getItem(SETS_KEY)); } catch {}
-  if (!c || Date.now() - c.t > 3 * 864e5) {
-    const [sets, pocket, ja] = await Promise.all([api('/sets'), api('/series/tcgp'), api('/sets', 'ja')]);
-    c = { t: Date.now(), sets, ja, pocket: pocket.sets.map(s => s.id) };
-    localStorage.setItem(SETS_KEY, JSON.stringify(c));
-  }
-  const pocket = new Set(c.pocket); // TCG Pocket is digital-only – hide it
-  const en = c.sets.filter(s => !pocket.has(s.id)).map(s => ({ ...s, code: s.id, lang: 'en' }));
-  const ja = c.ja.map(s => ({ ...s, id: `ja:${s.id}`, code: s.id, lang: 'ja' }));
-  return (setsCache = {
-    en, ja, pocket,
-    byId: new Map([...en, ...ja].map(s => [s.id, s])),
-    jaByCode: new Map(ja.map(s => [s.code.toLowerCase(), s])), // "sv2a" → set, for set codes read off cards
-  });
-}
-
-const setDetailCache = new Map();
-function getSet(id) {
-  if (!setDetailCache.has(id)) {
-    const language = langOf(id) === 'ja' ? 'ja' : 'en';
-    const load = api(`/sets/${encodeURIComponent(rawId(id))}`, language).then(set => {
-      set.cards = (set.cards || []).map(c => ({ ...c, id: language === 'ja' ? `ja:${c.id}` : c.id }));
-      return set;
-    });
-    setDetailCache.set(id, load.catch(err => { setDetailCache.delete(id); throw err; }));
-  }
-  return setDetailCache.get(id);
-}
-
-// English name → National Pokédex numbers, so "Pikachu" can find ピカチュウ.
-const dexCache = new Map();
-async function dexIdsFor(name) {
-  const key = name.toLowerCase();
-  if (!dexCache.has(key)) {
-    dexCache.set(key, (async () => {
-      const base = name.replace(/\s+(ex|gx|v|vmax|vstar|break|lv\.?\s*x|prime|legend)$/i, '');
-      const en = await api('/cards?' + new URLSearchParams({ name: base })).catch(() => []);
-      const pick = en.find(c => c.name.toLowerCase() === base.toLowerCase()) || en[0];
-      if (!pick) return [];
-      const full = await api(`/cards/${encodeURIComponent(pick.id)}`).catch(() => null);
-      return full?.dexId || [];
+// The catalog uses English names, even for Japanese cards: "ルカリオ" → "Lucario" (via TCGdex's Pokédex numbers).
+const nameCache = new Map();
+function englishName(jp) {
+  if (!nameCache.has(jp)) {
+    nameCache.set(jp, (async () => {
+      const get = path => fetch(`https://api.tcgdex.net/v2${path}`).then(r => (r.ok ? r.json() : null)).catch(() => null);
+      const hits = await get('/ja/cards?' + new URLSearchParams({ name: jp }));
+      if (!hits?.length) return '';
+      const dex = (await get(`/ja/cards/${encodeURIComponent(hits[0].id)}`))?.dexId?.[0];
+      if (!dex) return '';
+      const en = await get(`/en/cards?dexId=eq:${dex}`);
+      return (en || []).map(c => c.name).sort((a, b) => a.length - b.length)[0] || '';
     })());
   }
-  return dexCache.get(key);
+  return nameCache.get(jp);
 }
 
 /**
- * Find candidate cards.
- * names: possible card names (from OCR or typed), number: collector number ("25"),
- * total: printed set size ("165") used to pick the right set,
- * setCode: Japanese set code read off the card ("ja:SV2a").
+ * Find cards in the catalog.
+ * names: possible card names (read off the card or typed), number: collector number ("25"),
+ * total: printed set size ("165"), setCode: set read off the card ("g23637").
  */
 async function findCards({ names = [], number = '', total = '', setCode = '', language = 'en' }) {
-  const sets = await getSets();
-  const ja = language === 'ja';
-  const found = new Map();
-  const add = list => list.forEach(c => { if (!sets.pocket.has(setIdOf(c.id))) found.set(c.id, c); });
-  const query = params => api('/cards?' + new URLSearchParams(params), language)
-    .then(list => ja ? list.map(c => ({ ...c, id: `ja:${c.id}` })) : list)
-    .catch(() => []);
-  const setMatches = c => {
-    const s = sets.byId.get(setIdOf(c.id));
-    return !!s && (s.cardCount.official == total || s.cardCount.total == total);
-  };
-  const sameNumber = c => parseInt(c.localId, 10) === parseInt(number, 10) || c.localId.toLowerCase() === number.toLowerCase();
+  const pool = await catalog.cards(language);
+  await getSets();
+  const keys = (await Promise.all(names.map(n => (hasJapanese(n) ? englishName(n) : n))))
+    .filter(Boolean).map(nameKey).filter(k => k.length >= 2);
+  const nameOk = c => !keys.length || keys.some(k => nameKey(c.name).includes(k));
+  const numOk = c => !number || sameNumber(c.localId, number);
+  const totalOk = c => !total || sameNumber(c.total, total);
+  const nearTotal = c => !!total && !!c.total && String(+c.total).length === String(+total).length &&
+    editDistance(String(+c.total), String(+total)) <= 1;
 
-  // Japanese cards print their set code (e.g. "SV2a"), which pins down the exact card.
-  if (setCode && number) {
-    const set = await getSet(setCode).catch(() => null);
-    add((set?.cards || []).filter(sameNumber).map(c => ({ ...c, setName: set.name })));
-  }
+  let results = [];
+  if (setCode && number) results = pool.filter(c => c.setId === setCode && numOk(c));
+  if (!results.length && (keys.length || number)) results = pool.filter(c => nameOk(c) && numOk(c) && totalOk(c));
+  if (!results.length && number && total) results = pool.filter(c => nameOk(c) && numOk(c) && nearTotal(c)); // set size one digit off
+  if (!results.length && keys.length && number) results = pool.filter(c => nameOk(c) && numOk(c)); // set size misread
+  if (!results.length && keys.length && number) results = pool.filter(nameOk); // number misread
 
-  for (const name of names) {
-    const p = number ? { localId: number } : {};
-    if (ja && !hasJapanese(name)) {
-      // English name typed for a Japanese card: search by Pokédex number instead.
-      for (const dex of (await dexIdsFor(name)).slice(0, 2)) add(await query({ ...p, dexId: `eq:${dex}` }));
-    } else {
-      let hits = await query({ ...p, name });
-      if (!hits.length && ja) {
-        // Misread Japanese name: the name search matches parts of names, so try it with a few
-        // characters dropped from the front ("ヒビカチュウ" → "カチュウ") or one stray character removed
-        // ("マンツキー" → "マンキー").
-        const variants = new Set();
-        for (let i = 1; i <= 3; i++) variants.add(name.slice(i));
-        if (name.length <= 8) for (let i = 0; i < name.length; i++) variants.add(name.slice(0, i) + name.slice(i + 1));
-        const tries = [...variants].filter(v => v.length >= 3 && v !== name);
-        hits = (await Promise.all(tries.map(v => query({ ...p, name: v })))).flat();
-      }
-      add(hits);
-    }
-  }
-  // Name unreadable/wrong but we have the number: search by number, narrow by set size.
-  if (number && ![...found.values()].some(c => !total || setMatches(c))) {
-    const byNumber = (await query({ localId: number })).filter(sameNumber);
-    let pick = total ? byNumber.filter(setMatches) : byNumber.slice(0, 60);
-    // Set size misread by one digit ("160" for "190"): offer sets whose size is one digit off.
-    const setNear = c => {
-      const s = sets.byId.get(setIdOf(c.id));
-      return !!s && [s.cardCount.official, s.cardCount.total].some(n => String(n).length === total.length && editDistance(String(n), total) <= 1);
-    };
-    if (total && !pick.length) pick = byNumber.filter(setNear).slice(0, 30);
-    add(pick);
-  }
-
-  let results = [...found.values()];
-  if (number) { // the database matches "50" inside "550" – keep exact numbers when there are any
-    const exact = results.filter(sameNumber);
-    if (exact.length) results = exact;
-  }
-  const lower = names.map(n => n.toLowerCase());
-  const score = c =>
-    (setCode && setIdOf(c.id) === setCode ? 8 : 0) +
-    (total && setMatches(c) ? 4 : 0) +
-    (lower.includes(c.name.toLowerCase()) ? 2 : 0) +
-    (c.image ? 1 : 0);
-  results.sort((a, b) => score(b) - score(a));
-  results = results.slice(0, 60);
-  results.forEach(c => {
-    const s = sets.byId.get(setIdOf(c.id));
-    c.setName = s && (s.lang === 'ja' ? `${s.code} ${s.name}` : s.name);
-  });
-  remember(results);
-  return results;
+  const exact = new Set(keys);
+  const score = c => (setCode && c.setId === setCode ? 8 : 0) + (exact.has(nameKey(c.name)) ? 2 : 0) + (c.image ? 1 : 0);
+  // Ties: the plain card ("Pikachu") before special versions ("Pikachu (Pokemon Together)").
+  const variant = c => (/[([]/.test(c.name) ? 1 : 0);
+  return results.map((c, i) => [c, score(c), i])
+    .sort((a, b) => b[1] - a[1] || variant(a[0]) - variant(b[0]) || a[2] - b[2])
+    .map(x => x[0]).slice(0, 150);
 }
 
 // ---------- OCR ----------
@@ -190,22 +112,28 @@ function getWorker(kind = 'eng') {
   return workers.get(kind);
 }
 
-// Japanese set code printed at the bottom left, e.g. "SV2a" → "ja:SV2a".
-// OCR often gets one character wrong ("sv20"), so allow one mistake when the set size also fits.
-function findSetCode(text, sets, total) {
-  const tokens = text.split(/[^A-Za-z0-9.\-]+/).filter(t => /[a-z]/i.test(t) && /\d/.test(t) && t.length <= 7);
+// Set code printed on the card: Japanese "SV2a" (bottom left), newer English cards "MEW".
+// OCR often gets one character of a Japanese code wrong ("sv20"), so allow one mistake
+// when the set size also fits.
+function findSetCode(text, sets, total, language) {
+  const pool = language === 'ja' ? sets.ja : sets.en;
+  const fits = s => !!total && s.totals.some(t => sameNumber(t, total));
+  const tokens = text.split(/[^A-Za-z0-9.\-]+/).filter(t => t.length >= 2 && t.length <= 7 && /[a-z]/i.test(t));
   for (const t of tokens) {
-    const set = sets.jaByCode.get(t.toLowerCase());
-    if (set) return set.id;
+    const set = sets.byCode[language].get(t.toLowerCase());
+    // English codes are plain words, so only trust them when the set size agrees.
+    if (set && (fits(set) || (language === 'ja' && /\d/.test(t)))) return set.id;
   }
-  const fits = s => total && (s.cardCount.official == total || s.cardCount.total == total);
+  if (language !== 'ja' || !total) return '';
+  const coded = tokens.filter(t => /\d/.test(t));
   let best = null;
-  for (const s of sets.ja) {
-    const d = Math.min(...tokens.map(t => editDistance(t.toLowerCase(), s.code.toLowerCase())), 9);
-    if (d <= 1 && fits(s) && (!best || d < best.d)) best = { d, id: s.id };
+  for (const s of pool) {
+    if (!s.code || !fits(s)) continue;
+    const d = Math.min(...coded.map(t => editDistance(t.toLowerCase(), s.code.toLowerCase())), 9);
+    if (d <= 1 && (!best || d < best.d)) best = { d, id: s.id };
   }
   if (best) return best.id;
-  const bySize = sets.ja.filter(fits); // no readable code, but only one set has this many cards
+  const bySize = pool.filter(fits); // no readable code, but only one set has this many cards
   return bySize.length === 1 ? bySize[0].id : '';
 }
 
@@ -263,8 +191,8 @@ async function readCardNumber(canvas, language) {
   const sets = await getSets();
   const pool = language === 'ja' ? sets.ja : sets.en;
   // A reading only counts if some set really has that many cards ("077/972" can't be right).
-  const plausible = (number, total) => pool.some(s =>
-    (s.cardCount.official == total || s.cardCount.total == total) && +number <= Math.max(s.cardCount.total, s.cardCount.official));
+  const sizes = new Set(pool.flatMap(s => s.totals.map(t => String(+t))));
+  const plausible = (number, total) => sizes.has(String(+total)) && +number <= 450;
   // Every "number/size" found in every reading votes; number and set size are voted on
   // separately so one misread digit doesn't sink an otherwise good reading.
   const numVotes = new Map(), totalVotes = new Map();
@@ -304,13 +232,10 @@ async function readCardNumber(canvas, language) {
   const ranked = m => [...m].sort((a, b) => b[1] - a[1]).map(([k]) => k);
   const number = ranked(numVotes)[0] || '';
   let total = ranked(totalVotes).find(t => plausible(number, t)) || '';
-  let setCode = '';
-  if (language === 'ja') {
-    setCode = findSetCode(texts.join('\n'), sets, total);
-    // Trust a clearly-read set code over a misread set size.
-    const set = setCode && sets.byId.get(setCode);
-    if (set && total && set.cardCount.official != total && set.cardCount.total != total) total = String(set.cardCount.official || total);
-  }
+  const setCode = findSetCode(texts.join('\n'), sets, total, language);
+  // Trust a clearly-read set code over a misread set size.
+  const set = setCode && sets.byId.get(setCode);
+  if (set && total && set.totals.length && !set.totals.some(t => sameNumber(t, total))) total = String(+set.totals[0]);
   return { number, total, setCode, data, texts, numVotes, totalVotes };
 }
 
@@ -511,10 +436,10 @@ $('#search-form').addEventListener('submit', async e => {
   const name = $('#q-name').value.trim();
   let numberText = $('#q-number').value.trim();
   let setCode = '';
-  // Japanese cards: "SV4a 065/190" – a set code before the number pins down the card.
+  // "SV4a 065/190" or "MEW 025/165" – a set code before the number pins down the card.
   const m = numberText.match(/^([A-Za-z][A-Za-z0-9.\-]*)\s+(\S+)$/);
-  if (lang === 'ja' && m) {
-    const set = (await getSets().catch(() => null))?.jaByCode.get(m[1].toLowerCase());
+  if (m) {
+    const set = (await getSets().catch(() => null))?.byCode[lang].get(m[1].toLowerCase());
     if (set) { setCode = set.id; numberText = m[2]; }
   }
   const [number = '', total = ''] = numberText.split('/').map(s => s.trim().replace(/^0+(?=\d)/, ''));
@@ -525,7 +450,7 @@ $('#search-form').addEventListener('submit', async e => {
 // EN / JP switch
 function renderLang() {
   $$('[data-lang]').forEach(b => b.classList.toggle('on', b.dataset.lang === lang));
-  $('#q-name').placeholder = lang === 'ja' ? 'ピカチュウ or Pikachu' : 'e.g. Pikachu';
+  $('#q-name').placeholder = lang === 'ja' ? 'Pikachu or ピカチュウ' : 'e.g. Pikachu';
   $('#q-number').placeholder = lang === 'ja' ? 'SV4a 065/190' : '25/165';
 }
 $$('[data-lang]').forEach(b => b.addEventListener('click', () => {
@@ -552,13 +477,11 @@ async function runSearch(q) {
 
 function renderResults() {
   if (!ui.results) return;
-  const ja = ui.lastQuery?.language === 'ja';
-  const englishForJa = ja && ui.lastQuery.names.some(n => !hasJapanese(n));
   $('#results-head').innerHTML = (ui.results.length
-    ? 'Tap the card that matches yours:'
-    : `No matches. ${englishForJa ? 'Try the Japanese name (e.g. ピカチュウ) – Trainer cards need it.' : 'Check the spelling or try just the name.'}`) +
+    ? `Tap the card that matches yours${ui.results.length >= 150 ? ' (first 150 – add a number to narrow it down)' : ''}:`
+    : `No matches. Check the spelling, try just the name, or switch between English and Japanese cards.`) +
     ` <button class="linkish" id="manual-add">Can't find it? Add it yourself</button>`;
-  $('#results').innerHTML = ui.results.map(c => tile(c)).join('');
+  $('#results').innerHTML = ui.results.map(c => tile(c, { showSet: true })).join('');
 }
 
 // ---------- add a card by hand (for cards missing from the database) ----------
@@ -571,7 +494,7 @@ function openManual() {
   ui.modal = { type: 'manual', photo: ui.lastScan ? scanThumb(ui.lastScan) : null };
   $('#modal-body').innerHTML = `<form class="manual" data-manual>
     <h3>Add a card yourself</h3>
-    <p class="meta">For cards that aren't in the card database yet (common with older Japanese sets).</p>
+    <p class="meta">For the rare card that isn't in the card list (some promos and very old cards).</p>
     <div class="manual-photo" id="manual-photo"></div>
     <label class="chip" for="manual-file">📷 ${ui.modal.photo ? 'Use a different photo' : 'Add a photo'}</label>
     <input type="file" id="manual-file" accept="image/*" capture="environment" hidden>
@@ -579,7 +502,7 @@ function openManual() {
     <input id="m-name" required maxlength="60" value="${esc($('#q-name').value)}">
     <div class="manual-row">
       <div><label class="editor-label" for="m-set">Set</label>
-        <input id="m-set" maxlength="60" placeholder="${lang === 'ja' ? 'e.g. SV2a' : 'e.g. Base Set'}" value="${esc(set ? `${set.code} ${set.name}` : '')}"></div>
+        <input id="m-set" maxlength="60" placeholder="${lang === 'ja' ? 'e.g. SV2a' : 'e.g. Base Set'}" value="${esc(set ? set.label : '')}"></div>
       <div><label class="editor-label" for="m-number">Number</label>
         <input id="m-number" maxlength="12" placeholder="025/165" value="${esc($('#q-number').value)}"></div>
     </div>
@@ -637,14 +560,17 @@ $('#modal-body').addEventListener('submit', e => {
 });
 
 // ---------- tiles & card modal ----------
-// qty: number to show on the badge; defaults to copies across all binders.
-function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false } = {}) {
+// qty: number on the badge (defaults to copies across all binders); missing: grey out if not owned;
+// showSet: label with the set code too, for lists that mix sets.
+function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false, showSet = false } = {}) {
   const src = imgUrl(card);
+  const code = showSet ? setsCache?.byId.get(card.setId)?.code : '';
   return `<button class="tile${missing && !qty ? ' missing' : ''}" data-card="${esc(card.id)}" title="${esc(card.name)}">
     ${src ? `<img src="${esc(src)}" alt="${esc(card.name)}" loading="lazy">` : `<span class="noimg"><b>${esc(card.name)}</b><small>No picture yet</small></span>`}
     ${qty ? `<span class="badge">${times ? '×' : '✓ '}${qty}</span>` : ''}
-    <span class="num">${esc(card.localId)}</span>
-    ${langOf(card.id) === 'ja' || String(card.setId).startsWith('custom:ja:') ? '<span class="lang-tag">JP</span>' : ''}
+    ${store.wanted(card.id) ? '<span class="want-tag" title="On your wishlist">★</span>' : ''}
+    <span class="num">${esc([code, card.localId].filter(Boolean).join(' '))}</span>
+    ${langOfCard(card) === 'ja' ? '<span class="lang-tag">JP</span>' : ''}
   </button>`;
 }
 
@@ -653,14 +579,22 @@ document.addEventListener('click', e => {
   if (t) openCard(t.dataset.card);
 });
 
+// A few catalog pictures are missing on TCGplayer's side: show the name instead of a broken image.
+document.addEventListener('error', e => {
+  const img = e.target;
+  if (img.tagName !== 'IMG' || !img.closest('.tile')) return;
+  img.replaceWith(Object.assign(document.createElement('span'), {
+    className: 'noimg', innerHTML: `<b>${esc(img.alt)}</b><small>No picture yet</small>`,
+  }));
+}, true);
+
 function cardInfo(id) {
-  const c = seen.get(id) || store.storedCard(id);
+  const c = catalog.cardById(id) || seen.get(id) || store.storedCard(id);
   if (!c) return null;
-  const setId = c.setId || setIdOf(id);
-  const set = setsCache?.byId.get(setId);
+  const set = setsCache?.byId.get(c.setId);
   return {
-    id, name: c.name, localId: c.localId, image: c.image || '',
-    setId, setName: c.setName || (set ? (set.lang === 'ja' ? `${set.code} ${set.name}` : set.name) : setId),
+    id, pid: c.pid, name: c.name, localId: c.localId, image: c.image || '', rarity: c.rarity || '',
+    setId: c.setId, setName: c.setName || set?.label || '', lang: langOfCard(c),
   };
 }
 
@@ -668,7 +602,7 @@ function openCard(id) {
   if (!cardInfo(id)) return;
   ui.modal = { type: 'card', id };
   drawCard();
-  if (langOf(id) !== 'custom') loadPrice(id);
+  loadPrice(id);
   showModal();
 }
 
@@ -678,11 +612,16 @@ function drawCard() {
   const own = store.ownership(id);
   const total = own.reduce((n, x) => n + x.qty, 0);
   const target = targetBinder();
+  const want = store.wanted(id);
   $('#modal-body').innerHTML = `<div class="detail">
     ${card.image ? `<img class="detail-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : ''}
     <h3>${esc(card.name)}</h3>
-    <p class="meta">${langOf(id) === 'ja' ? '🇯🇵 ' : ''}${esc(card.setName)} · #${esc(card.localId)}${langOf(id) === 'custom' ? ' · added by you' : ''}</p>
-    <p class="price">${esc(priceText.get(id) || '')}</p>
+    <p class="meta">${card.lang === 'ja' ? '🇯🇵 ' : ''}${esc(card.setName)} · #${esc(card.localId)}${id.startsWith('custom:') ? ' · added by you' : ''}</p>
+    <p class="price">${esc(priceText.get(id) || card.rarity)}</p>
+    <div class="detail-links">
+      <button class="btn ghost want-btn${want ? ' on' : ''}" data-act="want">${want ? '★ On your wishlist' : '☆ Add to wishlist'}</button>
+      ${card.pid ? `<a class="btn ghost" href="${esc(catalog.productUrl(card.pid))}" target="_blank" rel="noopener">TCGplayer ↗</a>` : ''}
+    </div>
     ${own.length ? `<div class="own-list">
       <p class="owned-note">✓ You have ${total}</p>
       ${own.map(({ binder, qty }) => `<div class="own-row">
@@ -715,26 +654,19 @@ $('#modal-body').addEventListener('click', e => {
   } else if (act === 'inc' || act === 'dec') {
     const binderId = btn.dataset.binder;
     store.setQty(binderId, card, store.ownedTotal(card.id, binderId) + (act === 'inc' ? 1 : -1));
+  } else if (act === 'want') {
+    const want = !store.wanted(card.id);
+    store.setWanted(card, want);
+    toast(want ? `Added ${card.name} to your wishlist` : 'Removed from your wishlist');
   }
 });
 
-const priceCache = new Map();
 const priceText = new Map();
 async function loadPrice(id) {
-  if (!priceCache.has(id)) priceCache.set(id, api(`/cards/${encodeURIComponent(rawId(id))}`, langOf(id)).catch(() => null));
-  const full = await priceCache.get(id);
-  if (!full) return;
-  // Pricing layout varies between cards; grab the first TCGplayer market / Cardmarket trend price.
-  let usd = null, eur = null;
-  JSON.stringify(full, (k, v) => {
-    if (k === 'marketPrice' && typeof v === 'number' && usd == null) usd = v;
-    if (k === 'trend' && typeof v === 'number' && eur == null) eur = v;
-    return v;
-  });
-  const parts = [];
-  if (usd != null) parts.push(`$${usd.toFixed(2)} TCGplayer`);
-  if (eur != null) parts.push(`€${eur.toFixed(2)} Cardmarket`);
-  priceText.set(id, [full.rarity, parts.length ? `≈ ${parts.join(' · ')}` : ''].filter(Boolean).join(' — '));
+  const card = cardInfo(id);
+  const usd = await catalog.price(card).catch(() => null);
+  if (usd == null) return;
+  priceText.set(id, [card.rarity, `≈ $${usd.toFixed(2)} (TCGplayer market)`].filter(Boolean).join(' — '));
   if (ui.modal?.type === 'card' && ui.modal.id === id) $('#modal-body .price').textContent = priceText.get(id);
 }
 
@@ -821,8 +753,8 @@ function renderBinderView() {
       : [...groups].map(([setId, list]) => {
         const s = setsCache?.byId.get(setId);
         return `<div class="set-group">
-          <h3><span>${esc(list[0].setName || setId)} <small>${list.length}${s ? ` / ${s.cardCount.official}` : ''}</small></span>
-            ${setId.startsWith('custom:') ? '' : `<button class="linkish" data-open-set="${esc(setId)}">Checklist →</button>`}</h3>
+          <h3><span>${esc(s?.label || list[0].setName || setId)} <small>${list.length}${s ? ` / ${s.cards}` : ''}</small></span>
+            ${s ? `<button class="linkish" data-open-set="${esc(setId)}">Checklist →</button>` : ''}</h3>
           <div class="grid">${list.sort(byNumber).map(c => tile(c, { qty: c.qty, times: true })).join('')}</div>
         </div>`;
       }).join('') || `<div class="empty">No cards match “${esc(f)}”.</div>`}`;
@@ -839,10 +771,7 @@ $('#view-binder').addEventListener('click', e => {
   const edit = e.target.closest('[data-edit]');
   if (edit) return openCoverEditor(edit.dataset.edit);
   const set = e.target.closest('[data-open-set]');
-  if (set) {
-    $('#set-scope').dataset.want = ui.binderId;
-    showView('checklist', set.dataset.openSet);
-  }
+  if (set) openSetChecklist(set.dataset.openSet);
 });
 
 // ---------- cover editor ----------
@@ -978,84 +907,231 @@ function deleteBinder() {
   toast(`Deleted ${b.name}`);
 }
 
-// ---------- set checklist ----------
-async function fillSetSelect() {
-  const sets = await getSets();
-  const mine = new Set(store.allEntries().map(x => x.card.setId));
-  const opt = s => `<option value="${esc(s.id)}">${s.lang === 'ja' ? `${esc(s.code)} · ` : ''}${esc(s.name)} (${s.cardCount.official || s.cardCount.total})</option>`;
-  const current = $('#set-select').value;
-  $('#set-select').innerHTML = `<option value="">Choose a set…</option>` +
-    (mine.size ? `<optgroup label="Sets you collect">${[...sets.en, ...sets.ja].filter(s => mine.has(s.id)).map(opt).join('')}</optgroup>` : '') +
-    `<optgroup label="🇬🇧 English sets (newest first)">${[...sets.en].reverse().map(opt).join('')}</optgroup>` +
-    `<optgroup label="🇯🇵 Japanese sets (newest first)">${[...sets.ja].reverse().map(opt).join('')}</optgroup>`;
-  $('#set-select').value = current;
+// ---------- checklists & wishlist ----------
+// A checklist is a saved search over the whole catalog: every card of a Pokémon ("Umbreon",
+// English/Japanese/both) or a whole set. Owned cards show in colour, missing ones greyed out.
+const LANG_NAMES = { both: 'English + Japanese', en: 'English', ja: 'Japanese' };
+
+async function checklistCards(spec) {
+  if (spec.type === 'set') return catalog.setCards(spec.setId);
+  if (spec.type === 'name') {
+    const key = nameKey(spec.query);
+    // Newest first. TCGplayer's product ids grow over time, so they follow release order
+    // better than its dates (promo sets get re-dated whenever something is added to them).
+    return (await catalog.allCards(spec.lang || 'both')).filter(c => nameKey(c.name).includes(key)).sort((a, b) => b.pid - a.pid);
+  }
+  if (spec.type === 'wishlist') {
+    const wanted = Object.values(store.wishlist()?.spec.cards || {});
+    if (wanted.some(c => c.id.startsWith('tp:'))) await catalog.allCards('both');
+    return wanted.sort((a, b) => (b.added || 0) - (a.added || 0)).map(c => catalog.cardById(c.id) || c);
+  }
+  return [];
 }
 
-function fillScopeSelect() {
-  const sel = $('#set-scope');
-  const want = sel.dataset.want ?? sel.value;
-  delete sel.dataset.want;
-  sel.innerHTML = `<option value="">All binders</option>` +
-    store.binders().map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('');
-  sel.value = store.binder(want) ? want : '';
-}
+const listSpec = l => (l.kind === 'wishlist' ? { type: 'wishlist' } : l.spec);
+const progress = (cards, scope) => {
+  const have = cards.filter(c => store.ownedTotal(c.id, scope)).length;
+  return { have, total: cards.length, pct: cards.length ? Math.round((have / cards.length) * 100) : 0 };
+};
 
-async function renderChecklist() {
-  const id = $('#set-select').value;
-  const el = $('#set-view');
-  if (!id) { el.innerHTML = `<div class="empty">Pick a set to see which cards you have and which you're missing.</div>`; return; }
-  if (!setDetailCache.has(id)) el.innerHTML = `<div class="empty">Loading set…</div>`;
-  try {
-    const set = await getSet(id);
-    if ($('#set-select').value !== id) return;
-    const setName = langOf(id) === 'ja' ? `${rawId(id)} ${set.name}` : set.name;
-    if (!set.cards.length) {
-      el.innerHTML = `<div class="empty"><b>${esc(setName)}</b><br>The card list for this set isn't in the card database yet.<br>You can still add these cards with <b>Add cards → Can't find it? Add it yourself</b>.</div>`;
-      return;
-    }
-    set.cards.forEach(c => { c.setName = setName; });
-    remember(set.cards);
-    const scope = $('#set-scope').value || undefined;
-    const qtyOf = c => store.ownedTotal(c.id, scope);
-    const have = set.cards.filter(qtyOf).length;
-    const official = set.cardCount.official || set.cards.length;
-    const pct = Math.min(100, Math.round((have / official) * 100));
-    const cards = set.cards.filter(c => !$('#missing-only').checked || !qtyOf(c));
-    el.innerHTML = `<div class="progress">
-        <div class="row">
-          <div><b>${esc(setName)}</b><br><small>${have} of ${official} (${pct}%)${set.cards.length > official ? ` · ${set.cards.length} incl. secret rares` : ''}</small></div>
-          ${set.logo ? `<img src="${esc(set.logo)}.webp" alt="">` : ''}
-        </div>
-        <div class="bar"><span style="width:${pct}%"></span></div>
-      </div>
-      <div class="grid">${cards.map(c => tile(c, { qty: qtyOf(c), missing: true, times: true })).join('') || '<div class="empty">You have them all! 🎉</div>'}</div>`;
-  } catch (err) {
-    el.innerHTML = `<div class="empty">Couldn't load set: ${esc(err.message)}</div>`;
+function renderLists() {
+  const wl = store.wishlist();
+  const wishCount = Object.keys(wl?.spec.cards || {}).length;
+  const saved = store.lists().filter(l => l.kind === 'checklist');
+  $('#lists').innerHTML = `
+    <button class="list-card wish" data-list="wishlist">
+      <span class="list-icon">⭐</span>
+      <span class="list-body"><b>Wishlist</b><small id="prog-wishlist">${wishCount ? `${wishCount} card${wishCount === 1 ? '' : 's'}` : 'Tap ☆ on any card to add it here'}</small>
+      <span class="bar"><span id="bar-wishlist"></span></span></span>
+    </button>
+    ${saved.map(l => `<button class="list-card" data-list="${esc(l.id)}">
+      <span class="list-icon">${l.spec.type === 'set' ? '📦' : '🔎'}</span>
+      <span class="list-body"><b>${esc(l.name)}</b><small id="prog-${esc(l.id)}">Counting…</small>
+      <span class="bar"><span id="bar-${esc(l.id)}"></span></span></span>
+    </button>`).join('')}
+    <button class="list-card new-list" id="new-list">
+      <span class="list-icon">＋</span>
+      <span class="list-body"><b>New checklist</b><small>Every card of a Pokémon, or a whole set</small></span>
+    </button>`;
+  const counted = [...(wishCount ? [{ ...wl, key: 'wishlist' }] : []), ...saved.map(l => ({ ...l, key: l.id }))];
+  for (const l of counted) {
+    const label = () => $(`#prog-${CSS.escape(l.key)}`);
+    checklistCards(listSpec(l)).then(cards => {
+      const p = progress(cards);
+      if (!label()) return;
+      label().textContent = `${p.have} of ${p.total} owned (${p.pct}%)`;
+      $(`#bar-${CSS.escape(l.key)}`).style.width = `${p.pct}%`;
+    }).catch(() => { if (label()) label().textContent = "Couldn't load the card list"; });
   }
 }
 
-$('#set-select').addEventListener('change', renderChecklist);
-$('#set-scope').addEventListener('change', renderChecklist);
-$('#missing-only').addEventListener('change', renderChecklist);
+$('#lists').addEventListener('click', e => {
+  if (e.target.closest('#new-list')) return openNewChecklist();
+  const item = e.target.closest('[data-list]');
+  if (!item) return;
+  const key = item.dataset.list;
+  const l = store.list(key);
+  ui.list = key === 'wishlist'
+    ? { key, name: 'Wishlist', spec: { type: 'wishlist' }, saved: true }
+    : { key, id: l.id, name: l.name, spec: l.spec, saved: true };
+  showView('list');
+});
+
+function openSetChecklist(setId) {
+  const set = setsCache?.byId.get(setId);
+  const saved = store.lists().find(l => l.kind === 'checklist' && l.spec.type === 'set' && l.spec.setId === setId);
+  ui.list = saved
+    ? { key: saved.id, id: saved.id, name: saved.name, spec: saved.spec, saved: true }
+    : { key: `set:${setId}`, name: set?.label || 'Set', spec: { type: 'set', setId }, saved: false };
+  if (ui.tab !== 'binders') $('[data-tab="binders"]').click();
+  showView('list');
+}
+
+async function renderListView() {
+  const l = ui.list;
+  const el = $('#view-list');
+  if (!l) return showView('lists');
+  const head = `<div class="binder-head">
+      <button class="btn ghost" data-nav="lists">← Checklists</button>
+      ${!l.saved ? '<button class="btn primary" data-list-act="save">＋ Save checklist</button>'
+        : l.id ? '<button class="btn ghost danger" data-list-act="delete">Delete</button>' : ''}
+    </div>`;
+  if (el.dataset.key !== l.key) { el.dataset.key = l.key; el.innerHTML = `${head}<div class="empty">Loading cards…</div>`; }
+  try {
+    const cards = await checklistCards(l.spec);
+    if (ui.list !== l) return;
+    remember(cards);
+    const scope = l.scope || undefined;
+    const p = progress(cards, scope);
+    const shown = cards.filter(c => !l.missingOnly || !store.ownedTotal(c.id, scope));
+    const sub = l.spec.type === 'name' ? ` · ${LANG_NAMES[l.spec.lang || 'both']}` : '';
+    el.innerHTML = `${head}
+      <div class="progress">
+        <div class="row"><div><b>${esc(l.name)}</b><br><small>${p.have} of ${p.total} owned (${p.pct}%)${sub}</small></div></div>
+        <div class="bar"><span style="width:${p.pct}%"></span></div>
+      </div>
+      <div class="checklist-opts">
+        <label>Count cards in
+          <select id="list-scope"><option value="">All binders</option>${store.binders().map(b =>
+            `<option value="${esc(b.id)}"${b.id === l.scope ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select>
+        </label>
+        <label class="check"><input type="checkbox" id="list-missing"${l.missingOnly ? ' checked' : ''}> Missing only</label>
+      </div>
+      ${!cards.length
+        ? `<div class="empty">${l.spec.type === 'wishlist' ? 'Your wishlist is empty.<br>Open any card and tap <b>☆ Add to wishlist</b>.' : 'No cards found.'}</div>`
+        : `<div class="grid">${shown.map(c => tile(c, { qty: store.ownedTotal(c.id, scope), missing: true, times: true, showSet: l.spec.type !== 'set' })).join('')
+          || '<div class="empty">You have them all! 🎉</div>'}</div>`}`;
+  } catch (err) {
+    el.innerHTML = `${head}<div class="empty">Couldn't load the card list: ${esc(err.message)}</div>`;
+  }
+}
+
+$('#view-list').addEventListener('change', e => {
+  if (!ui.list) return;
+  if (e.target.id === 'list-missing') ui.list.missingOnly = e.target.checked;
+  else if (e.target.id === 'list-scope') ui.list.scope = e.target.value;
+  else return;
+  renderListView();
+});
+
+$('#view-list').addEventListener('click', e => {
+  if (e.target.closest('[data-nav="lists"]')) return showView('lists');
+  const act = e.target.closest('[data-list-act]')?.dataset.listAct;
+  if (act === 'save') {
+    const l = store.createList('checklist', ui.list.name, ui.list.spec);
+    Object.assign(ui.list, { id: l.id, key: l.id, saved: true });
+    $('#view-list').dataset.key = l.id;
+    toast('Checklist saved');
+    renderListView();
+  } else if (act === 'delete') {
+    if (!confirm(`Delete the checklist “${ui.list.name}”? Your cards stay in your binders.`)) return;
+    store.deleteList(ui.list.id);
+    toast('Checklist deleted');
+    showView('lists');
+  }
+});
+
+async function openNewChecklist() {
+  ui.modal = { type: 'newlist', kind: 'name' };
+  $('#modal-body').innerHTML = `<form class="newlist" data-newlist>
+    <h3>New checklist</h3>
+    <div class="segmented small">
+      <button type="button" class="seg active" data-nl="name">A Pokémon</button>
+      <button type="button" class="seg" data-nl="set">A whole set</button>
+    </div>
+    <div id="nl-name">
+      <label class="editor-label" for="nl-query">Pokémon or card name</label>
+      <input id="nl-query" placeholder="e.g. Umbreon, Sylveon, Charizard" autocomplete="off">
+      <label class="editor-label" for="nl-lang">Cards from</label>
+      <select id="nl-lang">${Object.entries(LANG_NAMES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+    </div>
+    <div id="nl-set" hidden>
+      <label class="editor-label" for="nl-setsel">Set</label>
+      <select id="nl-setsel"><option value="">Loading sets…</option></select>
+    </div>
+    <p class="status error" id="nl-status"></p>
+    <div class="editor-actions"><span></span><button class="btn primary">Create checklist</button></div>
+  </form>`;
+  showModal();
+  $('#nl-query').focus();
+  try {
+    const sets = await getSets();
+    const opt = s => `<option value="${esc(s.id)}">${esc(s.label)}${s.date ? ` (${s.date.slice(0, 4)})` : ''}</option>`;
+    const newest = list => [...list].sort((a, b) => b.date.localeCompare(a.date)).map(opt).join('');
+    if ($('#nl-setsel')) $('#nl-setsel').innerHTML = `<option value="">Choose a set…</option>
+      <optgroup label="🇬🇧 English sets (newest first)">${newest(sets.en)}</optgroup>
+      <optgroup label="🇯🇵 Japanese sets (newest first)">${newest(sets.ja)}</optgroup>`;
+  } catch (err) {
+    if ($('#nl-status')) $('#nl-status').textContent = `Couldn't load sets: ${err.message}`;
+  }
+}
+
+$('#modal-body').addEventListener('click', e => {
+  const kind = e.target.closest('[data-nl]')?.dataset.nl;
+  if (!kind || ui.modal?.type !== 'newlist') return;
+  ui.modal.kind = kind;
+  $$('[data-nl]').forEach(b => b.classList.toggle('active', b.dataset.nl === kind));
+  $('#nl-name').hidden = kind !== 'name';
+  $('#nl-set').hidden = kind !== 'set';
+});
+
+$('#modal-body').addEventListener('submit', async e => {
+  if (!e.target.matches('[data-newlist]')) return;
+  e.preventDefault();
+  let spec, name;
+  if (ui.modal.kind === 'set') {
+    const setId = $('#nl-setsel').value;
+    if (!setId) return ($('#nl-status').textContent = 'Choose a set first.');
+    spec = { type: 'set', setId };
+    name = setsCache?.byId.get(setId)?.label || 'Set';
+  } else {
+    let query = $('#nl-query').value.trim();
+    if (!query) return ($('#nl-status').textContent = 'Type a Pokémon name first.');
+    if (hasJapanese(query)) query = (await englishName(query)) || query; // the card list uses English names
+    const langChoice = $('#nl-lang').value;
+    spec = { type: 'name', query, lang: langChoice };
+    name = `All ${query}${langChoice === 'both' ? '' : langChoice === 'ja' ? ' (Japanese)' : ' (English)'}`;
+  }
+  const l = store.createList('checklist', name, spec);
+  $('#modal').close();
+  ui.list = { key: l.id, id: l.id, name, spec, saved: true };
+  showView('list');
+});
 
 // ---------- views & tabs ----------
-async function showView(view, setId) {
+function showView(view) {
   ui.view = view;
-  $$('#binder-seg .seg').forEach(b => b.classList.toggle('active', b.dataset.view === (view === 'binder' ? 'shelf' : view)));
+  const seg = { binder: 'shelf', list: 'lists' }[view] || view;
+  $$('#binder-seg .seg').forEach(b => b.classList.toggle('active', b.dataset.view === seg));
   $('#view-shelf').hidden = view !== 'shelf';
   $('#view-binder').hidden = view !== 'binder';
-  $('#view-checklist').hidden = view !== 'checklist';
+  $('#view-lists').hidden = view !== 'lists';
+  $('#view-list').hidden = view !== 'list';
   window.scrollTo(0, 0);
-  if (view === 'shelf') return renderShelf();
-  if (view === 'binder') return renderBinderView();
-  fillScopeSelect();
-  try {
-    await fillSetSelect();
-    if (setId) $('#set-select').value = setId;
-    await renderChecklist();
-  } catch (err) {
-    $('#set-view').innerHTML = `<div class="empty">${esc(err.message)}</div>`;
-  }
+  if (view === 'shelf') renderShelf();
+  else if (view === 'binder') renderBinderView();
+  else if (view === 'lists') renderLists();
+  else renderListView();
 }
 $$('#binder-seg .seg').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 
@@ -1067,6 +1143,45 @@ $$('.tabbtn').forEach(b => b.addEventListener('click', () => {
   window.scrollTo(0, 0);
 }));
 
+// ---------- upgrade cards saved before the catalog existed ----------
+// Older versions stored TCGdex ids; find the same card in the catalog and switch over,
+// keeping quantities, so checklists count them.
+let upgrading = false;
+async function upgradeLegacyCards() {
+  const legacy = [...store.allEntries().map(x => x.card), ...Object.values(store.wishlist()?.spec.cards || {})]
+    .filter((c, i, arr) => isLegacy(c.id) && arr.findIndex(x => x.id === c.id) === i);
+  if (!legacy.length || upgrading) return;
+  upgrading = true;
+  try {
+    const sets = await getSets();
+    for (const old of legacy) {
+      const ja = old.id.startsWith('ja:');
+      const pool = await catalog.cards(ja ? 'ja' : 'en');
+      let match = [];
+      if (ja) {
+        const code = old.id.slice(3, old.id.lastIndexOf('-'));
+        const set = sets.byCode.ja.get(code.toLowerCase());
+        if (set) match = pool.filter(c => c.setId === set.id && sameNumber(c.localId, old.localId));
+      } else {
+        const key = nameKey(old.name);
+        match = pool.filter(c => nameKey(c.name) === key && sameNumber(c.localId, old.localId));
+        if (match.length > 1 && old.setName) {
+          const bySet = match.filter(c => nameKey(c.setName).includes(nameKey(old.setName)));
+          if (bySet.length) match = bySet;
+        }
+      }
+      // Several versions with the same number (e.g. "Pikachu" and "Pikachu (Master Ball Mirror)"):
+      // the plain one – shortest name – is the regular card.
+      match.sort((a, b) => a.name.length - b.name.length);
+      if (match.length && (match.length === 1 || match[0].name.length < match[1].name.length)) store.replaceCard(old.id, match[0]);
+    }
+  } catch (err) {
+    console.warn('Card upgrade skipped', err);
+  } finally {
+    upgrading = false;
+  }
+}
+
 // Re-draw whatever is on screen when binder data changes (here or on another device).
 function render() {
   renderAccount();
@@ -1075,10 +1190,14 @@ function render() {
   if (ui.tab === 'binders') {
     if (ui.view === 'shelf') renderShelf();
     else if (ui.view === 'binder') renderBinderView();
-    else { fillScopeSelect(); renderChecklist(); }
+    else if (ui.view === 'lists') renderLists();
+    else renderListView();
   }
   if (ui.modal?.type === 'card') drawCard();
+  clearTimeout(upgradeTimer);
+  upgradeTimer = setTimeout(upgradeLegacyCards, 1500);
 }
+let upgradeTimer;
 store.onChange(render);
 
 // ---------- account ----------
@@ -1205,7 +1324,7 @@ $('#import').addEventListener('change', async e => {
 
 renderLang();
 render();
-getSets().catch(() => {}); // warm the set list cache
+getSets().then(render).catch(() => {}); // set names for binder headings
 
 // Test hook for local development only.
-if (location.hostname === 'localhost') window.__pb = { readCardNumber, findCards, fileToCanvas, getSets };
+if (location.hostname === 'localhost') window.__pb = { readCardNumber, findCards, fileToCanvas, getSets, catalog, store };

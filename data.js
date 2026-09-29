@@ -1,5 +1,5 @@
-// Binder data: kept in this browser (works offline / without an account) and,
-// when signed in, synced to Supabase so every device shows the same binders.
+// Binders, wishlist and checklists: kept in this browser (works offline / without an account)
+// and, when signed in, synced to Supabase so every device shows the same collection.
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_KEY } from './config.js';
 
@@ -26,10 +26,10 @@ let version = 0; // bumps on every local change, so a slow download can't overwr
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 }
-function blank(owner = null) { return { owner, binders: [], cards: {} }; }
+function blank(owner = null) { return { owner, binders: [], cards: {}, lists: [] }; }
 function loadLocal() {
   const s = load(KEY, null);
-  if (s?.binders) return s;
+  if (s?.binders) { s.lists ||= []; return s; }
   const fresh = blank();
   const old = load('pkbinder.v1', null); // first version had a single binder
   if (old?.cards && Object.keys(old.cards).length) {
@@ -69,11 +69,20 @@ export const ownedTotal = (cardId, binderId) =>
   binderId ? state.cards[binderId]?.[cardId]?.qty || 0 : ownership(cardId).reduce((n, x) => n + x.qty, 0);
 export function storedCard(cardId) {
   for (const b of state.binders) if (state.cards[b.id]?.[cardId]) return state.cards[b.id][cardId];
-  return null;
+  return wishlist()?.spec.cards?.[cardId] || null;
 }
+
+// Lists: one wishlist (kind 'wishlist', spec.cards = { id: card }) and any number of
+// checklists (kind 'checklist', spec = { type: 'name', query, lang } or { type: 'set', setId }).
+export const lists = () => [...state.lists].sort((a, b) => a.position - b.position || a.created.localeCompare(b.created));
+export const list = id => state.lists.find(l => l.id === id);
+export const wishlist = () => state.lists.find(l => l.kind === 'wishlist');
+export const wanted = cardId => !!wishlist()?.spec.cards?.[cardId];
 
 // ---------- writing ----------
 const binderRow = b => ({ id: b.id, name: b.name, cover: b.cover, position: b.position });
+const listRow = l => ({ id: l.id, kind: l.kind, name: l.name, spec: l.spec, position: l.position });
+const cardMeta = c => ({ id: c.id, name: c.name, localId: c.localId, image: c.image || '', setId: c.setId, setName: c.setName });
 const cardRow = (binderId, c) => ({
   binder_id: binderId, card_id: c.id, name: c.name, local_id: c.localId, image: c.image,
   set_id: c.setId, set_name: c.setName, qty: c.qty, added_at: new Date(c.added).toISOString(),
@@ -128,12 +137,57 @@ export function setQty(binderId, card, qty) {
   commit({ t: 'card', row: cardRow(binderId, entry) });
 }
 
+export function createList(kind, name, spec) {
+  const l = {
+    id: uuid(), kind, name, spec, created: new Date().toISOString(),
+    position: state.lists.reduce((m, x) => Math.max(m, x.position + 1), 0),
+  };
+  state.lists.push(l);
+  commit({ t: 'list', row: listRow(l) });
+  return l;
+}
+
+export function updateList(id, patch) {
+  const l = list(id);
+  if (!l) return;
+  Object.assign(l, patch);
+  commit({ t: 'list', row: listRow(l) });
+}
+
+export function deleteList(id) {
+  state.lists = state.lists.filter(l => l.id !== id);
+  commit({ t: 'delList', id });
+}
+
+export function setWanted(card, want) {
+  let w = wishlist();
+  if (!w) {
+    if (!want) return;
+    w = createList('wishlist', 'Wishlist', { cards: {} });
+  }
+  const cards = { ...(w.spec.cards || {}) };
+  if (want) cards[card.id] = { ...cardMeta(card), added: Date.now() };
+  else delete cards[card.id];
+  updateList(w.id, { spec: { ...w.spec, cards } });
+}
+
+/** Swap an old card id for a catalog card everywhere (binders and wishlist), keeping quantities. */
+export function replaceCard(oldId, card) {
+  for (const b of state.binders) {
+    const old = state.cards[b.id]?.[oldId];
+    if (!old) continue;
+    setQty(b.id, card, (state.cards[b.id][card.id]?.qty || 0) + old.qty);
+    setQty(b.id, { id: oldId }, 0);
+  }
+  if (wanted(oldId)) { setWanted({ id: oldId }, false); setWanted(card, true); }
+}
+
 function ensureDefault() {
   if (!state.binders.length) createBinder('My Binder');
 }
 
 // ---------- backup ----------
-export const exportData = () => ({ app: 'pokebinder', version: 2, binders: state.binders, cards: state.cards });
+export const exportData = () => ({ app: 'pokebinder', version: 3, binders: state.binders, cards: state.cards, lists: state.lists });
 
 export function importData(data) {
   const ops = [];
@@ -163,6 +217,11 @@ export function importData(data) {
   } else {
     throw new Error('Not a PokéBinder backup');
   }
+  for (const l of Array.isArray(data?.lists) ? data.lists : []) {
+    if (!l?.id || !l.kind || list(l.id) || (l.kind === 'wishlist' && wishlist())) continue;
+    state.lists.push({ position: state.lists.length, created: new Date().toISOString(), ...l });
+    ops.push({ t: 'list', row: listRow(list(l.id)) });
+  }
   commit(...ops);
   return count;
 }
@@ -183,6 +242,8 @@ export async function flush() {
       else if (op.t === 'delBinder') res = await sb.from('binders').delete().eq('id', op.id);
       else if (op.t === 'card') res = await sb.from('binder_cards').upsert(op.row);
       else if (op.t === 'delCard') res = await sb.from('binder_cards').delete().eq('binder_id', op.binder_id).eq('card_id', op.card_id);
+      else if (op.t === 'list') res = await sb.from('lists').upsert(op.row);
+      else if (op.t === 'delList') res = await sb.from('lists').delete().eq('id', op.id);
       if (res?.error) {
         // Database said no (not a network problem): skip this change instead of retrying forever.
         if (res.error.code) { console.warn('Sync rejected', op, res.error); }
@@ -213,9 +274,13 @@ async function selectAll(table) {
 export async function pull() {
   if (!user || queue.length) return;
   const v = version;
-  const [bRows, cRows] = await Promise.all([selectAll('binders'), selectAll('binder_cards')]);
+  const [bRows, cRows, lRows] = await Promise.all([
+    selectAll('binders'), selectAll('binder_cards'),
+    selectAll('lists').catch(() => null), // table missing (setup step not run yet): keep lists on this device
+  ]);
   if (v !== version || queue.length || !user) return; // something changed meanwhile – next pull will catch up
   const s = blank(user.id);
+  s.lists = lRows ? lRows.map(r => ({ id: r.id, kind: r.kind, name: r.name, spec: r.spec || {}, position: r.position, created: r.created_at })) : state.lists;
   s.binders = bRows.map(r => ({ id: r.id, name: r.name, cover: r.cover || {}, position: r.position, created: r.created_at }));
   s.binders.forEach(b => { s.cards[b.id] = {}; });
   for (const r of cRows) {
@@ -237,6 +302,7 @@ function subscribe() {
   channel = sb.channel('binder-sync')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'binders' }, schedulePull)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'binder_cards' }, schedulePull)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'lists' }, schedulePull)
     .subscribe();
 }
 
@@ -263,12 +329,13 @@ async function handleUser(u) {
 
   if (prev.owner !== u.id) {
     queue = [];
-    const guestCards = !prev.owner && prev.binders.some(b => Object.keys(prev.cards[b.id] || {}).length);
-    if (guestCards && confirm('Copy the binders saved on this device into your account?')) {
+    const guestCards = !prev.owner && (prev.lists.length || prev.binders.some(b => Object.keys(prev.cards[b.id] || {}).length));
+    if (guestCards && confirm('Copy the binders and lists saved on this device into your account?')) {
       for (const b of prev.binders) {
         queue.push({ t: 'binder', row: binderRow(b) });
         for (const c of Object.values(prev.cards[b.id] || {})) queue.push({ t: 'card', row: cardRow(b.id, c) });
       }
+      for (const l of prev.lists) queue.push({ t: 'list', row: listRow(l) });
     }
     state = blank(u.id);
     saveQueue();
