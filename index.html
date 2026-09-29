@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#e3350d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="PokéBinder">
+  <title>PokéBinder</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" defer></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1><span class="ball" aria-hidden="true"></span>PokéBinder</h1>
+    <button id="account" class="account-btn">Sign in</button>
+  </header>
+
+  <main>
+    <!-- ADD CARDS -->
+    <section id="tab-add" class="tab active">
+      <div class="panel target">
+        <label for="target">Adding to</label>
+        <select id="target"></select>
+      </div>
+
+      <div class="panel scan">
+        <label class="btn primary big" for="photo">📷 Scan a card</label>
+        <input id="photo" type="file" accept="image/*" capture="environment" hidden>
+        <p class="hint">Make the card fill the photo. Use good light and avoid glare on the name and the number in the bottom corner.</p>
+        <div class="preview-wrap" hidden><img id="preview" alt="Scanned card"></div>
+        <div id="scan-status" class="status" aria-live="polite"></div>
+      </div>
+
+      <form id="search-form" class="panel search">
+        <div class="field">
+          <label for="q-name">Card name</label>
+          <input id="q-name" placeholder="e.g. Pikachu" autocomplete="off">
+        </div>
+        <div class="field small">
+          <label for="q-number">Number</label>
+          <input id="q-number" placeholder="25/165" autocomplete="off">
+        </div>
+        <button class="btn primary" type="submit">Find</button>
+      </form>
+
+      <div id="results-head" class="results-head"></div>
+      <div id="results" class="grid"></div>
+    </section>
+
+    <!-- BINDERS -->
+    <section id="tab-binders" class="tab">
+      <div class="segmented" id="binder-seg">
+        <button class="seg active" data-view="shelf">My binders</button>
+        <button class="seg" data-view="checklist">Set checklist</button>
+      </div>
+
+      <div id="view-shelf" class="view">
+        <div id="shelf" class="shelf"></div>
+        <div class="backup">
+          <button id="export" class="btn ghost">⬇ Export backup</button>
+          <label class="btn ghost" for="import">⬆ Import backup</label>
+          <input id="import" type="file" accept="application/json,.json" hidden>
+        </div>
+      </div>
+
+      <div id="view-binder" class="view" hidden></div>
+
+      <div id="view-checklist" class="view" hidden>
+        <select id="set-select" class="filter"><option value="">Choose a set…</option></select>
+        <div class="checklist-opts">
+          <label>Count cards in
+            <select id="set-scope"></select>
+          </label>
+          <label class="check"><input type="checkbox" id="missing-only"> Missing only</label>
+        </div>
+        <div id="set-view"></div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button class="tabbtn active" data-tab="add">➕<span>Add cards</span></button>
+    <button class="tabbtn" data-tab="binders">📒<span>Binders</span></button>
+  </nav>
+
+  <dialog id="modal">
+    <form method="dialog"><button class="close" aria-label="Close">✕</button></form>
+    <div id="modal-body"></div>
+  </dialog>
+</body>
+</html>
