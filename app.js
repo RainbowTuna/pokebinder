@@ -136,8 +136,15 @@ async function findCards({ names = [], number = '', total = '', setCode = '', la
   }
   // Name unreadable/wrong but we have the number: search by number, narrow by set size.
   if (number && ![...found.values()].some(c => !total || setMatches(c))) {
-    const byNumber = await query({ localId: number });
-    add(total ? byNumber.filter(setMatches) : byNumber.slice(0, 60));
+    const byNumber = (await query({ localId: number })).filter(sameNumber);
+    let pick = total ? byNumber.filter(setMatches) : byNumber.slice(0, 60);
+    // Set size misread by one digit ("160" for "190"): offer sets whose size is one digit off.
+    const setNear = c => {
+      const s = sets.byId.get(setIdOf(c.id));
+      return !!s && [s.cardCount.official, s.cardCount.total].some(n => String(n).length === total.length && editDistance(String(n), total) <= 1);
+    };
+    if (total && !pick.length) pick = byNumber.filter(setNear).slice(0, 30);
+    add(pick);
   }
 
   let results = [...found.values()];
@@ -163,27 +170,24 @@ async function findCards({ names = [], number = '', total = '', setCode = '', la
 
 // ---------- OCR ----------
 const workers = new Map();
-function getWorker(language = 'eng') {
-  if (!workers.has(language)) {
-    workers.set(language, Tesseract.createWorker(language, 1, {
-      logger: m => {
-        if (m.status === 'recognizing text') status(`Reading card… ${Math.round(m.progress * 100)}%`);
-        else if (m.status?.startsWith('loading')) status(`Loading ${language === 'jpn' ? 'Japanese ' : ''}text reader (first time only)…`);
-      },
-    }));
+// 'eng' reads whole cards; 'num' only reads set codes and numbers (letters, digits, "/"),
+// which makes it much less likely to misread "105/190" as "505/100".
+function getWorker(kind = 'eng') {
+  if (!workers.has(kind)) {
+    workers.set(kind, (async () => {
+      const w = await Tesseract.createWorker('eng', 1, {
+        logger: m => { if (m.status?.startsWith('loading')) status('Loading text reader (first time only)…'); },
+      });
+      if (kind === 'num') {
+        await w.setParameters({
+          tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/.- ',
+          tessedit_pageseg_mode: '6',
+        });
+      }
+      return w;
+    })());
   }
-  return workers.get(language);
-}
-
-// Japanese name: the longest run of kana/kanji in the name area (skipping words like たね/進化).
-const JP_STOP = /^(たね|進化|1進化|2進化|ポケモン|トレーナーズ|グッズ|サポート|スタジアム|エネルギー|HP)$/;
-function parseJpName(text) {
-  const clean = text.replace(/\s+/g, '');
-  const runs = [
-    ...(clean.match(/[゠-ヿー]{3,}/g) || []), // katakana – most Pokémon names
-    ...(clean.match(/[゠-ヿ぀-ゟ一-鿿ー]{2,}/g) || []),
-  ].filter(r => !JP_STOP.test(r));
-  return [...new Set(runs)].slice(0, 2);
+  return workers.get(kind);
 }
 
 // Japanese set code printed at the bottom left, e.g. "SV2a" → "ja:SV2a".
@@ -247,12 +251,73 @@ function parseOcr(data, height) {
 }
 
 // Small text reads better enlarged and in high contrast, so OCR crops of the card.
-const bottomStrip = src => enhancedCrop(src, 0, 0.86, 1, 1, 2400); // collector number
-const jpBottomStrip = src => enhancedCrop(src, 0, 0.88, 0.5, 0.99, 1800); // set code + number (Japanese layout)
-const nameStrip = src => enhancedCrop(src, 0, 0.02, 0.78, 0.15, 1600); // card name (Japanese layout)
-function enhancedCrop(src, x0, y0, x1, y1, width) {
+const bottomStrip = (src, mode) => enhancedCrop(src, 0, 0.86, 1, 1, 2400, mode); // collector number
+const leftBottomStrip = (src, mode) => enhancedCrop(src, 0, 0.88, 0.5, 0.99, 1800, mode); // set code + number, bottom left
+
+/**
+ * Read the collector number ("65/190") and, for Japanese cards, the set code ("SV4a").
+ * The photo may show the table around the card, so first look for the number anywhere,
+ * then zoom in on that line; also read the usual bottom strips. Every reading votes.
+ */
+async function readCardNumber(canvas, language) {
+  const sets = await getSets();
+  const pool = language === 'ja' ? sets.ja : sets.en;
+  // A reading only counts if some set really has that many cards ("077/972" can't be right).
+  const plausible = (number, total) => pool.some(s =>
+    (s.cardCount.official == total || s.cardCount.total == total) && +number <= Math.max(s.cardCount.total, s.cardCount.official));
+  // Every "number/size" found in every reading votes; number and set size are voted on
+  // separately so one misread digit doesn't sink an otherwise good reading.
+  const numVotes = new Map(), totalVotes = new Map();
+  const bump = (m, k, w) => m.set(k, (m.get(k) || 0) + w);
+  const fix = s => s.replace(/[Oo]/g, '0').replace(/[Il|]/g, '1');
+  const texts = [];
+  const readings = text => [...text.matchAll(/([0-9OoIl|]{1,3})\s*[\/⁄]\s*([0-9OoIl|]{2,3})(?![0-9])/g)]
+    .map(m => [String(parseInt(fix(m[1]), 10)), String(parseInt(fix(m[2]), 10))])
+    .filter(([n, t]) => +n > 0 && plausible(n, t));
+  const read = (text, weight) => {
+    texts.push(text);
+    for (const [n, t] of readings(text)) { bump(numVotes, n, weight); bump(totalVotes, t, weight); }
+  };
+
+  status('Reading card…');
+  const eng = await getWorker('eng');
+  const num = await getWorker('num');
+  // The whole card gives us English names, and tells us where the number is.
+  const { data } = await eng.recognize(canvas);
+  read(data.text, 1);
+
+  status('Reading card number…');
+  const crops = [];
+  const hit = (data.words || []).find(w => readings(w.text).length);
+  if (hit) { // zoom in on wherever the number was spotted
+    const h = Math.max(8, hit.bbox.y1 - hit.bbox.y0);
+    const x0 = Math.max(0, hit.bbox.x0 - h * 14), x1 = Math.min(canvas.width, hit.bbox.x1 + h * 3);
+    const y0 = Math.max(0, hit.bbox.y0 - h * 1.3), y1 = Math.min(canvas.height, hit.bbox.y1 + h * 1.3);
+    crops.push([3, mode => enhancedCrop(canvas, x0 / canvas.width, y0 / canvas.height, x1 / canvas.width, y1 / canvas.height, 1800, mode)]);
+  }
+  if (language === 'ja') crops.push([2, mode => leftBottomStrip(canvas, mode)]); // set code + number, bottom left
+  crops.push([2, mode => bottomStrip(canvas, mode)]);
+  for (const [weight, crop] of crops) {
+    for (const mode of ['contrast', 'threshold']) read((await num.recognize(crop(mode))).data.text, weight);
+  }
+
+  const ranked = m => [...m].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  const number = ranked(numVotes)[0] || '';
+  let total = ranked(totalVotes).find(t => plausible(number, t)) || '';
+  let setCode = '';
+  if (language === 'ja') {
+    setCode = findSetCode(texts.join('\n'), sets, total);
+    // Trust a clearly-read set code over a misread set size.
+    const set = setCode && sets.byId.get(setCode);
+    if (set && total && set.cardCount.official != total && set.cardCount.total != total) total = String(set.cardCount.official || total);
+  }
+  return { number, total, setCode, data, texts, numVotes, totalVotes };
+}
+
+// mode 'contrast': grey with boosted contrast; 'threshold': pure black & white (helps with glare).
+function enhancedCrop(src, x0, y0, x1, y1, width, mode = 'contrast') {
   const sx = Math.round(src.width * x0), sy = Math.round(src.height * y0);
-  const sw = Math.round(src.width * x1) - sx, sh = Math.round(src.height * y1) - sy;
+  const sw = Math.max(1, Math.round(src.width * x1) - sx), sh = Math.max(1, Math.round(src.height * y1) - sy);
   const scale = Math.max(1, width / sw);
   const c = document.createElement('canvas');
   c.width = Math.round(sw * scale);
@@ -262,13 +327,35 @@ function enhancedCrop(src, x0, y0, x1, y1, width) {
   ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
   const img = ctx.getImageData(0, 0, c.width, c.height);
   const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-    const v = Math.max(0, Math.min(255, (g - 128) * 1.8 + 128));
+  const grey = new Uint8ClampedArray(d.length / 4);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) grey[j] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  const cut = mode === 'threshold' ? otsu(grey) : 0;
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+    const v = mode === 'threshold' ? (grey[j] > cut ? 255 : 0) : (grey[j] - 128) * 1.8 + 128;
     d[i] = d[i + 1] = d[i + 2] = v;
   }
   ctx.putImageData(img, 0, 0);
   return c;
+}
+
+// Otsu's method: the grey level that best splits text from background.
+function otsu(grey) {
+  const hist = new Array(256).fill(0);
+  for (const g of grey) hist[g]++;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, best = 0, cut = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (!wB) continue;
+    const wF = grey.length - wB;
+    if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) ** 2;
+    if (between > best) { best = between; cut = t; }
+  }
+  return cut;
 }
 
 // Decode a photo onto a canvas no bigger than maxSide (phone photos are huge).
@@ -303,65 +390,143 @@ $('#photo').addEventListener('change', async e => {
   e.target.value = '';
   if (!file) return;
   try {
-    const canvas = await fileToCanvas(file, 1600);
-    ui.lastScan = canvas;
-    $('#preview').src = URL.createObjectURL(file);
-    $('.preview-wrap').hidden = false;
-    status('Reading card…');
-    const language = lang;
-    const eng = await getWorker('eng');
-    let names = [], number = '', total = '', setCode = '';
-
-    if (language === 'ja') {
-      const sets = await getSets();
-      let strip = await eng.recognize(jpBottomStrip(canvas));
-      ({ number, total } = parseOcr({ text: strip.data.text, words: [] }, 0));
-      if (!number) { // older layouts print the number further right
-        strip = await eng.recognize(bottomStrip(canvas));
-        ({ number, total } = parseOcr({ text: strip.data.text, words: [] }, 0));
-      }
-      setCode = findSetCode(strip.data.text, sets, total);
-      status('Reading Japanese name…');
-      const top = await (await getWorker('jpn')).recognize(nameStrip(canvas));
-      names = parseJpName(top.data.text);
-    } else {
-      const { data } = await eng.recognize(canvas);
-      ({ names, number, total } = parseOcr(data, canvas.height));
-      if (!total) {
-        status('Reading card number…');
-        const strip = await eng.recognize(bottomStrip(canvas));
-        const n = parseOcr({ text: strip.data.text, words: [] }, 0);
-        if (n.number) ({ number, total } = n);
-      }
-    }
-
-    $('#q-name').value = names[0] || '';
-    $('#q-number').value = number ? (total ? `${number}/${total}` : number) : '';
-    if (!names.length && !number) {
-      status("Couldn't read this card. Try a closer photo with less glare, or type the name below.", true);
-      return;
-    }
-    const code = setCode && setsCache?.byId.get(setCode)?.code;
-    status(`Read: ${[names[0], code, number && (total ? `#${number}/${total}` : `#${number}`)].filter(Boolean).join(' · ')}. If that's wrong, fix it below and press Find.`);
-    await runSearch({ names, number, total, setCode, language });
+    await scanCanvas(await fileToCanvas(file, 1600), URL.createObjectURL(file));
   } catch (err) {
     console.error(err);
     status(`Something went wrong: ${err.message}`, true);
   }
 });
 
-$('#search-form').addEventListener('submit', e => {
+async function scanCanvas(canvas, previewUrl) {
+  ui.lastScan = canvas;
+  $('#preview').src = previewUrl;
+  $('.preview-wrap').hidden = false;
+  $('#results-head').textContent = '';
+  $('#results').innerHTML = '';
+  const language = lang;
+  const { number, total, setCode, data } = await readCardNumber(canvas, language);
+  // Japanese names can't be read reliably (stylised fonts), so Japanese cards are found by
+  // set code + number – the same way collectors look them up. English names read fine.
+  const names = language === 'ja' ? [] : parseOcr(data, canvas.height).names;
+  const code = setCode && setsCache?.byId.get(setCode)?.code;
+  const numberText = number ? (total ? `${number.padStart(3, '0')}/${total}` : number) : '';
+
+  $('#q-name').value = names[0] || '';
+  $('#q-number').value = [code, numberText].filter(Boolean).join(' ');
+  if (!names.length && !number) {
+    status(language === 'ja'
+      ? "Couldn't read the card number. Try again closer, with less glare on the bottom-left corner (e.g. “SV4a 065/190”) – or type it below."
+      : "Couldn't read this card. Try again closer, with less glare – or type the name below.", true);
+    return;
+  }
+  status(`Read: ${[names[0], code, numberText && `#${numberText}`].filter(Boolean).join(' · ')}. If that's wrong, fix it below and press Find.`);
+  await runSearch({ names, number, total, setCode, language });
+}
+
+// ---------- live camera with a card-shaped frame ----------
+// Capturing only what's inside the frame means the card fills the picture, so the
+// number is always in the bottom corner where the reader looks for it.
+let camStream = null;
+
+$('#scan-btn').addEventListener('click', async () => {
+  if (!navigator.mediaDevices?.getUserMedia) return $('#photo').click();
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+    });
+  } catch {
+    toast('Camera not available – choose a photo instead');
+    return $('#photo').click();
+  }
+  const video = $('#cam-video');
+  video.srcObject = camStream;
+  $('#camera').hidden = false;
+  document.body.classList.add('camera-open');
+  $('#cam-corner').classList.toggle('right', lang !== 'ja');
+  const track = camStream.getVideoTracks()[0];
+  try { await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch {}
+  $('#cam-torch').hidden = !track.getCapabilities?.().torch;
+  await video.play().catch(() => {});
+});
+
+function closeCamera() {
+  camStream?.getTracks().forEach(t => t.stop());
+  camStream = null;
+  $('#cam-video').srcObject = null;
+  $('#camera').hidden = true;
+  document.body.classList.remove('camera-open');
+}
+$('#cam-close').addEventListener('click', closeCamera);
+
+let torchOn = false;
+$('#cam-torch').addEventListener('click', async () => {
+  torchOn = !torchOn;
+  try { await camStream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: torchOn }] }); } catch {}
+});
+
+$('#cam-shoot').addEventListener('click', async () => {
+  const canvas = captureFrame();
+  if (!canvas) return toast('Camera is still starting – try again');
+  closeCamera();
+  window.scrollTo(0, 0);
+  try {
+    await scanCanvas(canvas, canvas.toDataURL('image/jpeg', 0.8));
+  } catch (err) {
+    console.error(err);
+    status(`Something went wrong: ${err.message}`, true);
+  }
+});
+
+// Copy the part of the video that's inside the on-screen frame (the video fills the screen
+// with object-fit: cover, so screen positions have to be mapped back to video pixels).
+function captureFrame() {
+  const video = $('#cam-video');
+  if (!video.videoWidth) return null;
+  const vr = video.getBoundingClientRect();
+  const fr = $('#cam-frame').getBoundingClientRect();
+  const scale = Math.max(vr.width / video.videoWidth, vr.height / video.videoHeight);
+  const offX = (vr.width - video.videoWidth * scale) / 2;
+  const offY = (vr.height - video.videoHeight * scale) / 2;
+  const sx = Math.max(0, (fr.left - vr.left - offX) / scale);
+  const sy = Math.max(0, (fr.top - vr.top - offY) / scale);
+  const sw = Math.min(video.videoWidth - sx, fr.width / scale);
+  const sh = Math.min(video.videoHeight - sy, fr.height / scale);
+  const up = Math.max(1, 1100 / sh); // small video frames read better enlarged
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(sw * up);
+  canvas.height = Math.round(sh * up);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  // A camera that's still starting up gives black frames – don't try to read those.
+  const probe = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  let bright = 0;
+  for (let i = 0; i < probe.length; i += 4 * 97) bright = Math.max(bright, probe[i] + probe[i + 1] + probe[i + 2]);
+  return bright > 60 ? canvas : null;
+}
+
+$('#search-form').addEventListener('submit', async e => {
   e.preventDefault();
   const name = $('#q-name').value.trim();
-  const [number = '', total = ''] = $('#q-number').value.trim().split('/').map(s => s.trim().replace(/^0+(?=\d)/, ''));
+  let numberText = $('#q-number').value.trim();
+  let setCode = '';
+  // Japanese cards: "SV4a 065/190" – a set code before the number pins down the card.
+  const m = numberText.match(/^([A-Za-z][A-Za-z0-9.\-]*)\s+(\S+)$/);
+  if (lang === 'ja' && m) {
+    const set = (await getSets().catch(() => null))?.jaByCode.get(m[1].toLowerCase());
+    if (set) { setCode = set.id; numberText = m[2]; }
+  }
+  const [number = '', total = ''] = numberText.split('/').map(s => s.trim().replace(/^0+(?=\d)/, ''));
   if (!name && !number) return;
-  runSearch({ names: name ? [name] : [], number, total, language: lang });
+  runSearch({ names: name ? [name] : [], number, total, setCode, language: lang });
 });
 
 // EN / JP switch
 function renderLang() {
   $$('[data-lang]').forEach(b => b.classList.toggle('on', b.dataset.lang === lang));
   $('#q-name').placeholder = lang === 'ja' ? 'ピカチュウ or Pikachu' : 'e.g. Pikachu';
+  $('#q-number').placeholder = lang === 'ja' ? 'SV4a 065/190' : '25/165';
 }
 $$('[data-lang]').forEach(b => b.addEventListener('click', () => {
   lang = b.dataset.lang;
@@ -1041,3 +1206,6 @@ $('#import').addEventListener('change', async e => {
 renderLang();
 render();
 getSets().catch(() => {}); // warm the set list cache
+
+// Test hook for local development only.
+if (location.hostname === 'localhost') window.__pb = { readCardNumber, findCards, fileToCanvas, getSets };

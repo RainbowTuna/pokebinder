@@ -34,9 +34,10 @@
           <button class="chip" data-lang="en">🇬🇧 English cards</button>
           <button class="chip" data-lang="ja">🇯🇵 Japanese cards</button>
         </div>
-        <label class="btn primary big" for="photo">📷 Scan a card</label>
-        <input id="photo" type="file" accept="image/*" capture="environment" hidden>
-        <p class="hint">Make the card fill the photo. Use good light and avoid glare on the name and the number in the bottom corner.</p>
+        <button class="btn primary big" id="scan-btn">📷 Scan a card</button>
+        <input id="photo" type="file" accept="image/*" hidden>
+        <p class="hint">Fit the card inside the frame. Use good light and avoid glare on the number in the bottom corner.
+          <br><label class="linkish" for="photo">or choose a photo</label></p>
         <div class="preview-wrap" hidden><img id="preview" alt="Scanned card"></div>
         <div id="scan-status" class="status" aria-live="polite"></div>
       </div>
@@ -92,6 +93,19 @@
     <button class="tabbtn active" data-tab="add">➕<span>Add cards</span></button>
     <button class="tabbtn" data-tab="binders">📒<span>Binders</span></button>
   </nav>
+
+  <div id="camera" class="camera" hidden>
+    <video id="cam-video" playsinline muted autoplay></video>
+    <div class="cam-frame" id="cam-frame">
+      <span class="cam-tip">Fit the card inside the frame</span>
+      <span class="cam-corner" id="cam-corner">↑ number is here</span>
+    </div>
+    <div class="cam-bar">
+      <button class="cam-side" id="cam-close" aria-label="Close camera">✕</button>
+      <button class="cam-shutter" id="cam-shoot" aria-label="Take photo"></button>
+      <button class="cam-side" id="cam-torch" aria-label="Flashlight" hidden>🔦</button>
+    </div>
+  </div>
 
   <dialog id="modal">
     <form method="dialog"><button class="close" aria-label="Close">✕</button></form>
