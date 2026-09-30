@@ -1,10 +1,10 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=10';
-import * as catalog from './catalog.js?v=10';
-import { CARD_IMAGE_RELAY } from './config.js?v=10';
-import { CHANGELOG } from './changelog.js?v=10';
+import * as store from './data.js?v=11';
+import * as catalog from './catalog.js?v=11';
+import { CARD_IMAGE_RELAY } from './config.js?v=11';
+import { CHANGELOG } from './changelog.js?v=11';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';

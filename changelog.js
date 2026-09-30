@@ -2,6 +2,10 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '1.7.1', date: '2026-09-30', title: 'Fix scrambled labels',
+    items: ['Fixed the button labels and icons that showed as scrambled characters after the last update.'],
+  },
+  {
     version: '1.7', date: '2026-09-30', title: 'Update log',
     items: ['This “What’s new” list – tap the version badge at the top any time.'],
   },

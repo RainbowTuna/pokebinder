@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -6,20 +6,20 @@
   <meta name="theme-color" content="#e3350d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="PokรฉBinder">
-  <title>PokรฉBinder</title>
+  <meta name="apple-mobile-web-app-title" content="PokéBinder">
+  <title>PokéBinder</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=11">
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" defer></script>
   <!-- On every release: add an entry to changelog.js and bump ?v= here and in app.js's imports, so phones never mix old and new files. -->
-  <script type="module" src="app.js?v=10"></script>
+  <script type="module" src="app.js?v=11"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <h1><span class="ball" aria-hidden="true"></span>PokรฉBinder</h1>
+      <h1><span class="ball" aria-hidden="true"></span>PokéBinder</h1>
       <button id="whats-new" class="version-btn" aria-label="What's new"></button>
     </div>
     <button id="account" class="account-btn">Sign in</button>
@@ -35,10 +35,10 @@
 
       <div class="panel scan">
         <div class="lang-switch" role="group" aria-label="Card language">
-          <button class="chip" data-lang="en">๐ฌ๐ง English cards</button>
-          <button class="chip" data-lang="ja">๐ฏ๐ต Japanese cards</button>
+          <button class="chip" data-lang="en">🇬🇧 English cards</button>
+          <button class="chip" data-lang="ja">🇯🇵 Japanese cards</button>
         </div>
-        <button class="btn primary big" id="scan-btn">๐“ท Scan a card</button>
+        <button class="btn primary big" id="scan-btn">📷 Scan a card</button>
         <input id="photo" type="file" accept="image/*" hidden>
         <p class="hint">Fit the card inside the frame. Use good light and avoid glare on the number in the bottom corner.
           <br><label class="linkish" for="photo">or choose a photo</label></p>
@@ -72,8 +72,8 @@
       <div id="view-shelf" class="view">
         <div id="shelf" class="shelf"></div>
         <div class="backup">
-          <button id="export" class="btn ghost">โฌ Export backup</button>
-          <label class="btn ghost" for="import">โฌ Import backup</label>
+          <button id="export" class="btn ghost">⬇ Export backup</button>
+          <label class="btn ghost" for="import">⬆ Import backup</label>
           <input id="import" type="file" accept="application/json,.json" hidden>
         </div>
       </div>
@@ -89,25 +89,25 @@
   </main>
 
   <nav class="tabbar">
-    <button class="tabbtn active" data-tab="add">โ•<span>Add cards</span></button>
-    <button class="tabbtn" data-tab="binders">๐“’<span>Binders</span></button>
+    <button class="tabbtn active" data-tab="add">➕<span>Add cards</span></button>
+    <button class="tabbtn" data-tab="binders">📒<span>Binders</span></button>
   </nav>
 
   <div id="camera" class="camera" hidden>
     <video id="cam-video" playsinline muted autoplay></video>
     <div class="cam-frame" id="cam-frame">
       <span class="cam-tip">Fit the card inside the frame</span>
-      <span class="cam-corner" id="cam-corner">โ‘ number is here</span>
+      <span class="cam-corner" id="cam-corner">↑ number is here</span>
     </div>
     <div class="cam-bar">
-      <button class="cam-side" id="cam-close" aria-label="Close camera">โ•</button>
+      <button class="cam-side" id="cam-close" aria-label="Close camera">✕</button>
       <button class="cam-shutter" id="cam-shoot" aria-label="Take photo"></button>
-      <button class="cam-side" id="cam-torch" aria-label="Flashlight" hidden>๐”ฆ</button>
+      <button class="cam-side" id="cam-torch" aria-label="Flashlight" hidden>🔦</button>
     </div>
   </div>
 
   <dialog id="modal">
-    <form method="dialog"><button class="close" aria-label="Close">โ•</button></form>
+    <form method="dialog"><button class="close" aria-label="Close">✕</button></form>
     <div id="modal-body"></div>
   </dialog>
 </body>
