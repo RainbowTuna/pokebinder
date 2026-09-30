@@ -1,8 +1,9 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=8';
-import * as catalog from './catalog.js?v=8';
+import * as store from './data.js?v=9';
+import * as catalog from './catalog.js?v=9';
+import { CARD_IMAGE_RELAY } from './config.js?v=9';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -308,6 +309,95 @@ async function matchScan({ texts, names, language }) {
   scored.sort((a, b) => b[1] - a[1] || variant(a[0]) - variant(b[0]) || b[0].pid - a[0].pid);  return scored.slice(0, 40).map(([card, score]) => ({ card, score }));
 }
 
+// ---------- picture check ----------
+// The text reading gives a shortlist; then the scan is compared with each shortlisted card's
+// picture (fetched through the relay, since TCGplayer's image server doesn't let pages read
+// pixels) and the one that looks most alike wins. Fingerprint = a tiny greyscale version of
+// the whole card (layout, artwork shapes) + the colours of the artwork.
+const RELAY = location.hostname === 'localhost' ? '/card-image' : CARD_IMAGE_RELAY;
+const GW = 16, GH = 22; // greyscale fingerprint size (card-shaped)
+const ART = [0.08, 0.1, 0.92, 0.5]; // artwork box on most cards: x0, y0, x1, y1
+
+function fingerprint(src, width, height, inset = 0) {
+  const x0 = width * inset, y0 = height * inset, w = width * (1 - 2 * inset), h = height * (1 - 2 * inset);
+  const c = document.createElement('canvas');
+  c.width = GW; c.height = GH;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(src, x0, y0, w, h, 0, 0, GW, GH);
+  const px = ctx.getImageData(0, 0, GW, GH).data;
+  const grey = new Float32Array(GW * GH);
+  let mean = 0;
+  for (let i = 0; i < grey.length; i++) { grey[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]; mean += grey[i]; }
+  mean /= grey.length;
+  let sd = 0;
+  for (let i = 0; i < grey.length; i++) { grey[i] -= mean; sd += grey[i] ** 2; }
+  sd = Math.sqrt(sd / grey.length) || 1;
+  for (let i = 0; i < grey.length; i++) grey[i] /= sd;
+
+  const AW = 24, AH = 14;
+  c.width = AW; c.height = AH;
+  ctx.drawImage(src, x0 + w * ART[0], y0 + h * ART[1], w * (ART[2] - ART[0]), h * (ART[3] - ART[1]), 0, 0, AW, AH);
+  const art = ctx.getImageData(0, 0, AW, AH).data;
+  const hist = new Float32Array(64); // 4×4×4 colour bins
+  for (let i = 0; i < art.length; i += 4) hist[(art[i] >> 6) * 16 + (art[i + 1] >> 6) * 4 + (art[i + 2] >> 6)] += 1 / (AW * AH);
+  return { grey, hist };
+}
+
+function likeness(a, b) {
+  let ncc = 0;
+  for (let i = 0; i < a.grey.length; i++) ncc += a.grey[i] * b.grey[i];
+  ncc /= a.grey.length; // -1…1
+  let overlap = 0;
+  for (let i = 0; i < 64; i++) overlap += Math.min(a.hist[i], b.hist[i]); // 0…1
+  return 0.65 * (ncc + 1) / 2 + 0.35 * overlap;
+}
+
+const printCache = new Map();
+function cardPrint(card) {
+  if (!printCache.has(card.pid)) {
+    printCache.set(card.pid, (async () => {
+      const r = await fetch(`${RELAY}?pid=${card.pid}`);
+      if (!r.ok) throw new Error(`picture relay ${r.status}`);
+      const bmp = await createImageBitmap(await r.blob());
+      const print = fingerprint(bmp, bmp.width, bmp.height);
+      bmp.close();
+      return print;
+    })().catch(err => { printCache.delete(card.pid); throw err; }));
+  }
+  return printCache.get(card.pid);
+}
+
+/** Re-rank text matches by how much each card's picture looks like the scan. */
+async function pictureCheck(canvas, matches) {
+  const shortlist = matches.filter(m => m.card.image).slice(0, 24);
+  if (shortlist.length < 2) return null;
+  status('Comparing pictures…');
+  // The camera frame leaves a little table around the card: try a few crops, keep the best.
+  const scans = [0, 0.03, 0.06].map(inset => fingerprint(canvas, canvas.width, canvas.height, inset));
+  const prints = [];
+  for (let i = 0; i < shortlist.length; i += 8) { // a few at a time
+    prints.push(...await Promise.all(shortlist.slice(i, i + 8).map(m => cardPrint(m.card).catch(() => null))));
+    if (i === 0 && prints.every(p => !p)) return null; // relay not set up / offline: keep the text ranking
+  }
+  const top = Math.max(...shortlist.map(m => m.score)) || 1;
+  const ranked = shortlist.map((m, i) => {
+    const look = prints[i] ? Math.max(...scans.map(s => likeness(s, prints[i]))) : 0;
+    return { ...m, look, final: 0.35 * (m.score / top) + 0.65 * look };
+  }).sort((a, b) => b.final - a.final);
+  // Special versions ("Pikachu (Poke Ball Pattern)", "(Mirror Holofoil)") look almost the same as
+  // the regular card; unless one clearly looks more alike, put the regular card first.
+  const baseName = c => c.name.replace(/\s*[([].*$/, '');
+  const plain = ranked.findIndex(m => !/[([]/.test(m.card.name) && m.card.setId === ranked[0].card.setId &&
+    m.card.number === ranked[0].card.number && baseName(m.card) === baseName(ranked[0].card));
+  if (plain > 0 && ranked[0].final - ranked[plain].final < 0.04) ranked.unshift(...ranked.splice(plain, 1));
+  const rest = matches.filter(m => !shortlist.includes(m));
+  // Sure = clearly ahead of the next *different* card (other versions of the same card don't count).
+  const sameCard = m => m.card.number === ranked[0].card.number && baseName(m.card) === baseName(ranked[0].card);
+  const runnerUp = ranked.slice(1).find(m => !sameCard(m));
+  const sure = ranked[0].look >= 0.62 && ranked[0].final - (runnerUp?.final ?? 0) >= 0.05;
+  return { matches: [...ranked, ...rest], sure };
+}
+
 // mode 'contrast': grey with boosted contrast; 'threshold': pure black & white (helps with glare).
 function enhancedCrop(src, x0, y0, x1, y1, width, mode = 'contrast') {
   const sx = Math.round(src.width * x0), sy = Math.round(src.height * y0);
@@ -400,7 +490,11 @@ async function scanCanvas(canvas, previewUrl, framed = false) {
   const language = lang;
   const read = await readCard(canvas, language, framed);
   status('Checking the card list…');
-  const matches = await matchScan({ ...read, language });
+  let matches = await matchScan({ ...read, language });
+  // Compare pictures when the scan is just the card (camera frame, or a photo cropped to the card).
+  const cardShaped = framed || Math.abs(canvas.width / canvas.height - 63 / 88) < 0.08;
+  const checked = cardShaped && matches.length > 1 ? await pictureCheck(canvas, matches).catch(() => null) : null;
+  if (checked) matches = checked.matches;
   if (!matches.length) {
     status(language === 'ja'
       ? "Couldn't read the card. Try again closer, with less glare on the bottom-left corner (e.g. “SV4a 065/190”) – or type it below."
@@ -412,7 +506,7 @@ async function scanCanvas(canvas, previewUrl, framed = false) {
   $('#q-name').value = language === 'en' ? best.name : '';
   $('#q-number').value = [code, best.number].filter(Boolean).join(' ');
   // Clear winner, or a few close ones for you to choose from?
-  const sure = matches.length === 1 || matches[0].score >= matches[1].score * 1.5;
+  const sure = checked ? checked.sure : matches.length === 1 || matches[0].score >= matches[1].score * 1.5;
   status(sure
     ? `Best match: ${best.name} · ${[code, best.number].filter(Boolean).join(' ')}. Tap it to add, or pick another below.`
     : `Closest matches from the card list – tap yours. Not there? Fix the number below and press Find.`);
@@ -1403,4 +1497,4 @@ render();
 getSets().then(render).catch(() => {}); // set names for binder headings
 
 // Test hook for local development only.
-if (location.hostname === 'localhost') window.__pb = { readCard, matchScan, findCards, fileToCanvas, getSets, catalog, store };
+if (location.hostname === 'localhost') window.__pb = { readCard, matchScan, pictureCheck, findCards, fileToCanvas, getSets, catalog, store };
