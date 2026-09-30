@@ -1,8 +1,8 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=7';
-import * as catalog from './catalog.js?v=7';
+import * as store from './data.js?v=8';
+import * as catalog from './catalog.js?v=8';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -112,31 +112,6 @@ function getWorker(kind = 'eng') {
   return workers.get(kind);
 }
 
-// Set code printed on the card: Japanese "SV2a" (bottom left), newer English cards "MEW".
-// OCR often gets one character of a Japanese code wrong ("sv20"), so allow one mistake
-// when the set size also fits.
-function findSetCode(text, sets, total, language) {
-  const pool = language === 'ja' ? sets.ja : sets.en;
-  const fits = s => !!total && s.totals.some(t => sameNumber(t, total));
-  const tokens = text.split(/[^A-Za-z0-9.\-]+/).filter(t => t.length >= 2 && t.length <= 7 && /[a-z]/i.test(t));
-  for (const t of tokens) {
-    const set = sets.byCode[language].get(t.toLowerCase());
-    // English codes are plain words, so only trust them when the set size agrees.
-    if (set && (fits(set) || (language === 'ja' && /\d/.test(t)))) return set.id;
-  }
-  if (language !== 'ja' || !total) return '';
-  const coded = tokens.filter(t => /\d/.test(t));
-  let best = null;
-  for (const s of pool) {
-    if (!s.code || !fits(s)) continue;
-    const d = Math.min(...coded.map(t => editDistance(t.toLowerCase(), s.code.toLowerCase())), 9);
-    if (d <= 1 && (!best || d < best.d)) best = { d, id: s.id };
-  }
-  if (best) return best.id;
-  const bySize = pool.filter(fits); // no readable code, but only one set has this many cards
-  return bySize.length === 1 ? bySize[0].id : '';
-}
-
 function editDistance(a, b) {
   const row = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
@@ -181,62 +156,156 @@ function parseOcr(data, height) {
 // Small text reads better enlarged and in high contrast, so OCR crops of the card.
 const bottomStrip = (src, mode) => enhancedCrop(src, 0, 0.86, 1, 1, 2400, mode); // collector number
 const leftBottomStrip = (src, mode) => enhancedCrop(src, 0, 0.88, 0.5, 0.99, 1800, mode); // set code + number, bottom left
+const tallLeftStrip = (src, mode) => enhancedCrop(src, 0, 0.83, 0.6, 0.97, 1800, mode); // same, if the card sits a little high
 
 /**
- * Read the collector number ("65/190") and, for Japanese cards, the set code ("SV4a").
- * The photo may show the table around the card, so first look for the number anywhere,
- * then zoom in on that line; also read the usual bottom strips. Every reading votes.
+ * Read everything useful off a card: name words (English), and every "number/size" and set code
+ * the text reader can find. Nothing is trusted on its own – matchScan() checks it all against
+ * the card list. framed: the picture is just the card (camera frame), so skip the slow
+ * whole-picture read and look straight at the name and number areas.
  */
-async function readCardNumber(canvas, language) {
-  const sets = await getSets();
-  const pool = language === 'ja' ? sets.ja : sets.en;
-  // A reading only counts if some set really has that many cards ("077/972" can't be right).
-  const sizes = new Set(pool.flatMap(s => s.totals.map(t => String(+t))));
-  const plausible = (number, total) => sizes.has(String(+total)) && +number <= 450;
-  // Every "number/size" found in every reading votes; number and set size are voted on
-  // separately so one misread digit doesn't sink an otherwise good reading.
-  const numVotes = new Map(), totalVotes = new Map();
-  const bump = (m, k, w) => m.set(k, (m.get(k) || 0) + w);
-  const fix = s => s.replace(/[Oo]/g, '0').replace(/[Il|]/g, '1');
+async function readCard(canvas, language, framed) {
   const texts = [];
-  const readings = text => [...text.matchAll(/([0-9OoIl|]{1,3})\s*[\/⁄]\s*([0-9OoIl|]{2,3})(?![0-9])/g)]
-    .map(m => [String(parseInt(fix(m[1]), 10)), String(parseInt(fix(m[2]), 10))])
-    .filter(([n, t]) => +n > 0 && plausible(n, t));
-  const read = (text, weight) => {
-    texts.push(text);
-    for (const [n, t] of readings(text)) { bump(numVotes, n, weight); bump(totalVotes, t, weight); }
-  };
-
-  status('Reading card…');
+  let names = [];
   const eng = await getWorker('eng');
   const num = await getWorker('num');
-  // The whole card gives us English names, and tells us where the number is.
-  const { data } = await eng.recognize(canvas);
-  read(data.text, 1);
-
+  if (!framed) {
+    // A photo: the card could be anywhere, so read the whole thing and zoom in on the number.
+    status('Reading card…');
+    const { data } = await eng.recognize(canvas);
+    texts.push({ text: data.text, w: 1 });
+    if (language === 'en') names = parseOcr(data, canvas.height).names;
+    const hit = (data.words || []).find(w => /[0-9Oo]{1,3}\s*\/\s*[0-9Oo]{2,3}/.test(w.text));
+    if (hit) {
+      const h = Math.max(8, hit.bbox.y1 - hit.bbox.y0);
+      const box = [
+        Math.max(0, hit.bbox.x0 - h * 14) / canvas.width, Math.max(0, hit.bbox.y0 - h * 1.3) / canvas.height,
+        Math.min(canvas.width, hit.bbox.x1 + h * 3) / canvas.width, Math.min(canvas.height, hit.bbox.y1 + h * 1.3) / canvas.height,
+      ];
+      for (const mode of ['contrast', 'threshold']) texts.push({ text: (await num.recognize(enhancedCrop(canvas, ...box, 1800, mode))).data.text, w: 3 });
+    }
+  } else if (language === 'en') {
+    status('Reading name…');
+    names = nameWordsFrom((await eng.recognize(enhancedCrop(canvas, 0.04, 0.02, 0.8, 0.12, 1400))).data.text);
+  }
   status('Reading card number…');
-  const crops = [];
-  const hit = (data.words || []).find(w => readings(w.text).length);
-  if (hit) { // zoom in on wherever the number was spotted
-    const h = Math.max(8, hit.bbox.y1 - hit.bbox.y0);
-    const x0 = Math.max(0, hit.bbox.x0 - h * 14), x1 = Math.min(canvas.width, hit.bbox.x1 + h * 3);
-    const y0 = Math.max(0, hit.bbox.y0 - h * 1.3), y1 = Math.min(canvas.height, hit.bbox.y1 + h * 1.3);
-    crops.push([3, mode => enhancedCrop(canvas, x0 / canvas.width, y0 / canvas.height, x1 / canvas.width, y1 / canvas.height, 1800, mode)]);
+  const strips = language === 'ja' ? [leftBottomStrip, bottomStrip, tallLeftStrip] : [bottomStrip, leftBottomStrip];
+  for (const strip of strips) {
+    for (const mode of ['contrast', 'threshold']) texts.push({ text: (await num.recognize(strip(canvas, mode))).data.text, w: 2 });
   }
-  if (language === 'ja') crops.push([2, mode => leftBottomStrip(canvas, mode)]); // set code + number, bottom left
-  crops.push([2, mode => bottomStrip(canvas, mode)]);
-  for (const [weight, crop] of crops) {
-    for (const mode of ['contrast', 'threshold']) read((await num.recognize(crop(mode))).data.text, weight);
+  return { texts, names };
+}
+
+const nameWordsFrom = text => [...new Set(text.split(/\s+/)
+  .map(w => w.replace(/[^A-Za-zÀ-ÿ'.\-]/g, ''))
+  .filter(w => w.length >= 3 && !STOP.has(w.toLowerCase())))].slice(0, 5);
+
+// ---------- matching a scan against the card list ----------
+// Look-alike characters the text reader mixes up count as half a mistake.
+const LOOKALIKE = new Set(['0o', '08', '0d', '06', '09', '0a', 'oa', '1l', '1i', '17', '1|', 'il', '2z', '5s', '56', '38', '3e', '8b', '69', '4a']
+  .flatMap(p => [p, p[1] + p[0]]));
+function fuzzyDistance(a, b) {
+  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = row[0]++;
+    for (let j = 1; j <= b.length; j++) {
+      const cur = row[j];
+      const sub = a[i - 1] === b[j - 1] ? 0 : LOOKALIKE.has(a[i - 1] + b[j - 1]) ? 0.5 : 1;
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + sub);
+      prev = cur;
+    }
+  }
+  return row[b.length];
+}
+
+// "O25" → "25", "l05" → "105": digits-looking letters become digits (unless it's a prefix like "TG05").
+function cleanNumber(s) {
+  let t = s.toLowerCase();
+  const m = t.match(/^([a-z]{2,})(.*)$/);
+  const prefix = m && !/^[oidlqsbz|]+$/.test(m[1]) ? m[1] : '';
+  let rest = prefix ? m[2] : t;
+  rest = rest.replace(/[odq]/g, '0').replace(/[il|]/g, '1').replace(/z/g, '2').replace(/s/g, '5').replace(/b/g, '8');
+  return prefix + (rest.replace(/^0+(?=.)/, ''));
+}
+const plainNumber = s => String(s).toLowerCase().replace(/^([a-z]*)0+(?=\d)/, '$1');
+
+/** Score every card in the list against what was read; best matches first. */
+async function matchScan({ texts, names, language }) {
+  const [pool, sets] = await Promise.all([catalog.cards(language), getSets()]);
+
+  // Every "number/size" pair in every reading, weighted by how much we trust that reading.
+  const pairs = new Map();
+  for (const { text, w } of texts) {
+    for (const m of text.matchAll(/([0-9A-Za-z|]{1,5})\s*[\/⁄]\s*([0-9A-Za-z|]{2,5})/g)) {
+      const n = cleanNumber(m[1]), t = cleanNumber(m[2]);
+      if (!/\d/.test(n) || !/\d/.test(t)) continue;
+      const key = `${n}/${t}`;
+      pairs.set(key, { n, t, w: (pairs.get(key)?.w || 0) + w });
+    }
+  }
+  const readings = [...pairs.values()];
+  // Loose 2–3 digit groups (the "/" didn't come through, e.g. "orz172"): weak evidence.
+  const groups = new Map();
+  for (const { text, w } of texts) {
+    for (const g of text.split(/[^0-9A-Za-z|]+/).map(cleanNumber)) {
+      if (/^\d{2,3}$/.test(g)) groups.set(g, (groups.get(g) || 0) + w);
+    }
   }
 
-  const ranked = m => [...m].sort((a, b) => b[1] - a[1]).map(([k]) => k);
-  const number = ranked(numVotes)[0] || '';
-  let total = ranked(totalVotes).find(t => plausible(number, t)) || '';
-  const setCode = findSetCode(texts.join('\n'), sets, total, language);
-  // Trust a clearly-read set code over a misread set size.
-  const set = setCode && sets.byId.get(setCode);
-  if (set && total && set.totals.length && !set.totals.some(t => sameNumber(t, total))) total = String(+set.totals[0]);
-  return { number, total, setCode, data, texts, numVotes, totalVotes };
+  // Set codes printed on the card ("SV4a", "MEW").
+  const tokens = new Set(texts.flatMap(({ text }) => text.split(/[^A-Za-z0-9.\-]+/))
+    .filter(t => t.length >= 2 && t.length <= 7 && /[a-z]/i.test(t)).map(t => t.toLowerCase()));
+  const codeScore = new Map();
+  for (const s of language === 'ja' ? sets.ja : sets.en) {
+    const code = s.code.toLowerCase();
+    if (!code) continue;
+    // Short codes ("LL") turn up by accident in misread text, so they need a digit to count.
+    if (tokens.has(code) && (code.length >= 3 || /\d/.test(code))) codeScore.set(s.id, 5);
+    // Longer Japanese codes misread by one character: "svda" for "SV4a".
+    else if (code.length >= 4 && /\d/.test(code) && [...tokens].some(t => t.length === code.length && fuzzyDistance(t, code) <= 1)) codeScore.set(s.id, 2.5);
+  }
+
+  const words = names.map(n => nameKey(n)).flatMap(n => n.split(' ')).filter(w => w.length >= 3 && !STOP.has(w));
+  const nameMemo = new Map();
+  const nameScore = name => {
+    if (!words.length) return 0;
+    if (!nameMemo.has(name)) {
+      const parts = nameKey(name).split(' ');
+      nameMemo.set(name, parts.some(p => words.includes(p)) ? 6
+        : parts.some(p => p.length >= 5 && words.some(w => w.length >= 5 && fuzzyDistance(p, w) <= 1)) ? 4 : 0);
+    }
+    return nameMemo.get(name);
+  };
+
+  const numMemo = new Map();
+  const closeness = (a, b, exact, near, far) => {
+    const key = `${a}|${b}`;
+    if (!numMemo.has(key)) {
+      const d = fuzzyDistance(a, b);
+      numMemo.set(key, d === 0 ? exact : d <= 0.5 ? near : d <= 1 && a.length >= 2 ? far : 0);
+    }
+    return numMemo.get(key);
+  };
+
+  const scored = [];
+  for (const card of pool) {
+    const id = plainNumber(card.localId), total = plainNumber(card.total);
+    let s = 0;
+    for (const r of readings) {
+      const ns = closeness(id, r.n, 3, 2.2, 1.2);
+      if (ns) s += (ns + (total ? closeness(total, r.t, 2, 1.4, 0.8) : 0)) * r.w;
+    }
+    const loose = (groups.get(id) || 0) * 0.6 + (total ? (groups.get(total) || 0) * 0.4 : 0);
+    const name = nameScore(card.name);
+    // The set code only helps a card whose number also fits.
+    const code = s || groups.has(id) ? codeScore.get(card.setId) || 0 : 0;
+    if (!s && !name && !code) continue;
+    s += loose;
+    s += name * 2 + code * 2;
+    scored.push([card, s]);
+  }
+  const variant = c => (/[([]/.test(c.name) ? 1 : 0);
+  scored.sort((a, b) => b[1] - a[1] || variant(a[0]) - variant(b[0]) || b[0].pid - a[0].pid);  return scored.slice(0, 40).map(([card, score]) => ({ card, score }));
 }
 
 // mode 'contrast': grey with boosted contrast; 'threshold': pure black & white (helps with glare).
@@ -322,30 +391,35 @@ $('#photo').addEventListener('change', async e => {
   }
 });
 
-async function scanCanvas(canvas, previewUrl) {
+async function scanCanvas(canvas, previewUrl, framed = false) {
   ui.lastScan = canvas;
   $('#preview').src = previewUrl;
   $('.preview-wrap').hidden = false;
   $('#results-head').textContent = '';
   $('#results').innerHTML = '';
   const language = lang;
-  const { number, total, setCode, data } = await readCardNumber(canvas, language);
-  // Japanese names can't be read reliably (stylised fonts), so Japanese cards are found by
-  // set code + number – the same way collectors look them up. English names read fine.
-  const names = language === 'ja' ? [] : parseOcr(data, canvas.height).names;
-  const code = setCode && setsCache?.byId.get(setCode)?.code;
-  const numberText = number ? (total ? `${number.padStart(3, '0')}/${total}` : number) : '';
-
-  $('#q-name').value = names[0] || '';
-  $('#q-number').value = [code, numberText].filter(Boolean).join(' ');
-  if (!names.length && !number) {
+  const read = await readCard(canvas, language, framed);
+  status('Checking the card list…');
+  const matches = await matchScan({ ...read, language });
+  if (!matches.length) {
     status(language === 'ja'
-      ? "Couldn't read the card number. Try again closer, with less glare on the bottom-left corner (e.g. “SV4a 065/190”) – or type it below."
-      : "Couldn't read this card. Try again closer, with less glare – or type the name below.", true);
+      ? "Couldn't read the card. Try again closer, with less glare on the bottom-left corner (e.g. “SV4a 065/190”) – or type it below."
+      : "Couldn't read the card. Try again closer, with less glare – or type the name below.", true);
     return;
   }
-  status(`Read: ${[names[0], code, numberText && `#${numberText}`].filter(Boolean).join(' · ')}. If that's wrong, fix it below and press Find.`);
-  await runSearch({ names, number, total, setCode, language });
+  const best = matches[0].card;
+  const code = setsCache?.byId.get(best.setId)?.code;
+  $('#q-name').value = language === 'en' ? best.name : '';
+  $('#q-number').value = [code, best.number].filter(Boolean).join(' ');
+  // Clear winner, or a few close ones for you to choose from?
+  const sure = matches.length === 1 || matches[0].score >= matches[1].score * 1.5;
+  status(sure
+    ? `Best match: ${best.name} · ${[code, best.number].filter(Boolean).join(' ')}. Tap it to add, or pick another below.`
+    : `Closest matches from the card list – tap yours. Not there? Fix the number below and press Find.`);
+  ui.lastQuery = { names: read.names, language, scan: true };
+  ui.results = matches.map(m => m.card);
+  ui.bestId = sure ? best.id : null;
+  renderResults();
 }
 
 // ---------- live camera with a card-shaped frame ----------
@@ -396,7 +470,7 @@ $('#cam-shoot').addEventListener('click', async () => {
   closeCamera();
   window.scrollTo(0, 0);
   try {
-    await scanCanvas(canvas, canvas.toDataURL('image/jpeg', 0.8));
+    await scanCanvas(canvas, canvas.toDataURL('image/jpeg', 0.8), true);
   } catch (err) {
     console.error(err);
     status(`Something went wrong: ${err.message}`, true);
@@ -464,6 +538,7 @@ async function runSearch(q) {
   $('#results-head').textContent = 'Searching…';
   $('#results').innerHTML = '';
   ui.results = null;
+  ui.bestId = null;
   ui.lastQuery = q;
   try {
     const results = await findCards(q);
@@ -478,10 +553,11 @@ async function runSearch(q) {
 function renderResults() {
   if (!ui.results) return;
   $('#results-head').innerHTML = (ui.results.length
-    ? `Tap the card that matches yours${ui.results.length >= 150 ? ' (first 150 – add a number to narrow it down)' : ''}:`
+    ? ui.lastQuery?.scan ? 'Best matches from the card list:'
+    : `Tap the card that matches yours${ui.results.length >= 150 ? ' (first 150 – add a number to narrow it down)' : ''}:`
     : `No matches. Check the spelling, try just the name, or switch between English and Japanese cards.`) +
     ` <button class="linkish" id="manual-add">Can't find it? Add it yourself</button>`;
-  $('#results').innerHTML = ui.results.map(c => tile(c, { showSet: true })).join('');
+  $('#results').innerHTML = ui.results.map(c => tile(c, { showSet: true, best: c.id === ui.bestId })).join('');
 }
 
 // ---------- add a card by hand (for cards missing from the database) ----------
@@ -562,10 +638,10 @@ $('#modal-body').addEventListener('submit', e => {
 // ---------- tiles & card modal ----------
 // qty: number on the badge (defaults to copies across all binders); missing: grey out if not owned;
 // showSet: label with the set code too, for lists that mix sets.
-function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false, showSet = false } = {}) {
+function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false, showSet = false, best = false } = {}) {
   const src = imgUrl(card);
   const code = showSet ? setsCache?.byId.get(card.setId)?.code : '';
-  return `<button class="tile${missing && !qty ? ' missing' : ''}" data-card="${esc(card.id)}" title="${esc(card.name)}">
+  return `<button class="tile${missing && !qty ? ' missing' : ''}${best ? ' best' : ''}" data-card="${esc(card.id)}" title="${esc(card.name)}">
     ${src ? `<img src="${esc(src)}" alt="${esc(card.name)}" loading="lazy">` : `<span class="noimg"><b>${esc(card.name)}</b><small>No picture yet</small></span>`}
     ${qty ? `<span class="badge">${times ? '×' : '✓ '}${qty}</span>` : ''}
     ${store.wanted(card.id) ? '<span class="want-tag" title="On your wishlist">★</span>' : ''}
@@ -1327,4 +1403,4 @@ render();
 getSets().then(render).catch(() => {}); // set names for binder headings
 
 // Test hook for local development only.
-if (location.hostname === 'localhost') window.__pb = { readCardNumber, findCards, fileToCanvas, getSets, catalog, store };
+if (location.hostname === 'localhost') window.__pb = { readCard, matchScan, findCards, fileToCanvas, getSets, catalog, store };

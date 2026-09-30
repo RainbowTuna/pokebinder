@@ -126,6 +126,11 @@ input:not([type=checkbox]):not([type=color]), select {
   background: rgb(0 0 0 / .6); color: #fff; padding: 1px 6px; border-radius: 6px;
 }
 .tile.missing img { filter: grayscale(1); opacity: .45; }
+.tile.best { outline: 3px solid var(--ok); outline-offset: 2px; }
+.tile.best::after {
+  content: "Best match"; position: absolute; left: 50%; top: 6px; transform: translateX(-50%);
+  background: var(--ok); color: #fff; font-size: .62rem; font-weight: 800; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+}
 
 /* ---------- binders ---------- */
 .segmented { display: flex; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 4px; margin-bottom: 14px; }
