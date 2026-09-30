@@ -1,9 +1,10 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=9';
-import * as catalog from './catalog.js?v=9';
-import { CARD_IMAGE_RELAY } from './config.js?v=9';
+import * as store from './data.js?v=10';
+import * as catalog from './catalog.js?v=10';
+import { CARD_IMAGE_RELAY } from './config.js?v=10';
+import { CHANGELOG } from './changelog.js?v=10';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -1467,6 +1468,31 @@ store.sb.auth.onAuthStateChange(event => {
   if (event === 'PASSWORD_RECOVERY') setTimeout(() => { ui.modal = { type: 'account', mode: 'newpass' }; drawAccount(); showModal(); }, 0);
 });
 
+// ---------- what's new ----------
+const SEEN_KEY = 'pkbinder.seenVersion';
+const latest = CHANGELOG[0].version;
+function renderVersion() {
+  let seen = null;
+  try { seen = localStorage.getItem(SEEN_KEY); } catch {}
+  const btn = $('#whats-new');
+  btn.textContent = `v${latest}`;
+  btn.classList.toggle('unseen', seen !== latest);
+  btn.title = seen !== latest ? 'New update – see what’s new' : 'What’s new';
+}
+$('#whats-new').addEventListener('click', () => {
+  ui.modal = { type: 'changelog' };
+  $('#modal-body').innerHTML = `<div class="changelog">
+    <h3>What’s new</h3>
+    ${CHANGELOG.map(c => `<section>
+      <div class="cl-head"><span class="cl-version">v${esc(c.version)}</span><b>${esc(c.title)}</b><small>${esc(c.date)}</small></div>
+      <ul>${c.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+    </section>`).join('')}
+  </div>`;
+  showModal();
+  try { localStorage.setItem(SEEN_KEY, latest); } catch {}
+  renderVersion();
+});
+
 // ---------- backup ----------
 $('#export').addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(store.exportData(), null, 2)], { type: 'application/json' });
@@ -1493,6 +1519,7 @@ $('#import').addEventListener('change', async e => {
 });
 
 renderLang();
+renderVersion();
 render();
 getSets().then(render).catch(() => {}); // set names for binder headings
 

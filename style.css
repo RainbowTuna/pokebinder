@@ -48,6 +48,23 @@ button, input, select { font: inherit; color: inherit; }
     linear-gradient(#e3350d 0 45%, #1d1d24 45% 55%, #fff 55%);
   box-shadow: 0 0 0 1.5px #fff;
 }
+.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.version-btn {
+  position: relative; border: 0; cursor: pointer; font-size: .72rem; font-weight: 800;
+  background: rgb(255 255 255 / .2); color: #fff; padding: 3px 8px; border-radius: 999px;
+}
+.version-btn.unseen::after { /* "new update" dot */
+  content: ""; position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%;
+  background: #ffcb05; box-shadow: 0 0 0 2px var(--accent);
+}
+.changelog h3 { margin: 0 0 12px; }
+.changelog section { border-top: 1px solid var(--line); padding: 12px 0 4px; }
+.cl-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cl-version { background: var(--accent); color: var(--accent-ink); font-size: .72rem; font-weight: 800; padding: 1px 7px; border-radius: 999px; }
+.cl-head small { color: var(--muted); margin-left: auto; }
+.changelog ul { margin: 6px 0 0; padding-left: 20px; }
+.changelog li { margin: 4px 0; font-size: .92rem; line-height: 1.4; }
+
 .account-btn {
   border: 1px solid rgb(255 255 255 / .6); background: rgb(255 255 255 / .15); color: #fff;
   border-radius: 999px; padding: 6px 14px; font-weight: 700; font-size: .85rem; cursor: pointer;
