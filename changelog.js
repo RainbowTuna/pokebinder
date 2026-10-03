@@ -2,6 +2,15 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '1.8', date: '2026-10-03', title: 'Graded cards, prices & quick add',
+    items: [
+      '＋ button on every card: tap to add one to your binder straight away (with Undo).',
+      'When adding a card, choose Raw or Graded – PSA, BGS, CGC, SGC, TAG or ARS, each with its own grades (PSA 10 → 1, BGS/CGC/SGC in half steps, TAG, ARS 10+).',
+      '“How much you got it for” – in Thai baht or US dollars – saved with each copy, with a total of what you paid per card.',
+      'Graded cards show a gold grade badge (e.g. PSA 10), and PSA/CGC cert numbers link to the cert page.',
+    ],
+  },
+  {
     version: '1.7.1', date: '2026-09-30', title: 'Fix scrambled labels',
     items: ['Fixed the button labels and icons that showed as scrambled characters after the last update.'],
   },

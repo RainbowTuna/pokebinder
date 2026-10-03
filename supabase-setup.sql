@@ -21,6 +21,7 @@ create table if not exists public.binder_cards (
   set_name   text,
   qty        int  not null default 1 check (qty > 0),
   added_at   timestamptz not null default now(),
+  copies     jsonb not null default '[]'::jsonb, -- grade + price per copy
   primary key (binder_id, card_id)
 );
 
@@ -88,3 +89,6 @@ begin
   alter publication supabase_realtime add table public.lists;
 exception when duplicate_object then null;
 end $$;
+
+-- Grade + price per copy (same as supabase-update-copies.sql), for databases made before it existed.
+alter table public.binder_cards add column if not exists copies jsonb not null default '[]'::jsonb;

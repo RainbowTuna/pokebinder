@@ -1,10 +1,10 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=11';
-import * as catalog from './catalog.js?v=11';
-import { CARD_IMAGE_RELAY } from './config.js?v=11';
-import { CHANGELOG } from './changelog.js?v=11';
+import * as store from './data.js?v=12';
+import * as catalog from './catalog.js?v=12';
+import { CARD_IMAGE_RELAY } from './config.js?v=12';
+import { CHANGELOG } from './changelog.js?v=12';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -730,25 +730,73 @@ $('#modal-body').addEventListener('submit', e => {
   toast(`Added ${card.name} to ${store.binder(binderId).name}`);
 });
 
+// ---------- grades & prices ----------
+// Grading scales, best first. PSA and ARS use whole grades; BGS, CGC and SGC go in half steps;
+// TAG has half steps except between 9 and 10.
+const steps = (hi, lo, step) => Array.from({ length: Math.round((hi - lo) / step) + 1 }, (_, i) => String(+(hi - i * step).toFixed(1)));
+const GRADERS = {
+  PSA: steps(10, 1, 1),
+  BGS: ['10 Black Label', '10 Pristine', ...steps(9.5, 1, 0.5)],
+  CGC: ['10 Pristine', '10', ...steps(9.5, 1, 0.5)],
+  SGC: ['10 Pristine', '10', ...steps(9.5, 1, 0.5)],
+  TAG: ['10 Pristine', '10', ...steps(9, 1, 0.5)],
+  ARS: ['10+', ...steps(10, 1, 1)],
+};
+const CERT_LINKS = {
+  PSA: c => `https://www.psacard.com/cert/${encodeURIComponent(c)}`,
+  CGC: c => `https://www.cgccards.com/certlookup/${encodeURIComponent(c)}/`,
+};
+const CUR_KEY = 'pkbinder.currency';
+const money = (amount, cur) => (cur === 'USD'
+  ? `$${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  : `฿${amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
+const gradeLabel = copy => (copy.grader ? `${copy.grader} ${copy.grade}` : 'Raw');
+// "10 Black Label" / "10 Pristine" / "10+" rank just above a plain 10.
+const gradeValue = copy => parseFloat(copy.grade) + (/[a-z+]/i.test(copy.grade) ? 0.25 : 0);
+function bestGrade(cardId) {
+  const graded = store.copiesOf(cardId).map(x => x.copy).filter(c => c.grader);
+  if (!graded.length) return '';
+  return gradeLabel(graded.sort((a, b) => gradeValue(b) - gradeValue(a))[0]).replace(/ (Black Label|Pristine)$/, ' ★');
+}
+
 // ---------- tiles & card modal ----------
 // qty: number on the badge (defaults to copies across all binders); missing: grey out if not owned;
-// showSet: label with the set code too, for lists that mix sets.
-function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false, showSet = false, best = false } = {}) {
+// showSet: label with the set code too, for lists that mix sets; addTo: binder the ＋ button adds to.
+function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false, showSet = false, best = false, addTo = '' } = {}) {
   const src = imgUrl(card);
   const code = showSet ? setsCache?.byId.get(card.setId)?.code : '';
-  return `<button class="tile${missing && !qty ? ' missing' : ''}${best ? ' best' : ''}" data-card="${esc(card.id)}" title="${esc(card.name)}">
+  const graded = qty ? bestGrade(card.id) : '';
+  return `<div class="tile${missing && !qty ? ' missing' : ''}${best ? ' best' : ''}" role="button" tabindex="0" data-card="${esc(card.id)}" title="${esc(card.name)}">
     ${src ? `<img src="${esc(src)}" alt="${esc(card.name)}" loading="lazy">` : `<span class="noimg"><b>${esc(card.name)}</b><small>No picture yet</small></span>`}
     ${qty ? `<span class="badge">${times ? '×' : '✓ '}${qty}</span>` : ''}
+    ${graded ? `<span class="grade-tag">${esc(graded)}</span>` : ''}
     ${store.wanted(card.id) ? '<span class="want-tag" title="On your wishlist">★</span>' : ''}
-    <span class="num">${esc([code, card.localId].filter(Boolean).join(' '))}</span>
-    ${langOfCard(card) === 'ja' ? '<span class="lang-tag">JP</span>' : ''}
-  </button>`;
+    <span class="num">${langOfCard(card) === 'ja' ? '<i class="jp">JP</i>' : ''}${esc([code, card.localId].filter(Boolean).join(' '))}</span>
+    <button class="quick-add" data-quick="${esc(card.id)}"${addTo ? ` data-binder="${esc(addTo)}"` : ''} aria-label="Add one to binder" title="Add 1 to binder">＋</button>
+  </div>`;
 }
 
 document.addEventListener('click', e => {
+  const quick = e.target.closest('[data-quick]');
+  if (quick) return quickAdd(quick.dataset.quick, quick.dataset.binder);
   const t = e.target.closest('[data-card]');
   if (t) openCard(t.dataset.card);
 });
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.tile[data-card]')) {
+    e.preventDefault();
+    openCard(e.target.dataset.card);
+  }
+});
+
+// ＋ on a tile: one more copy in the binder you're adding to (or the binder you're looking at).
+function quickAdd(id, binderId) {
+  const card = cardInfo(id);
+  const b = store.binder(binderId) || targetBinder();
+  if (!card || !b) return;
+  store.addCopy(b.id, card);
+  toast(`Added ${card.name} to ${b.name}`, { label: 'Undo', run: () => store.removeCopy(b.id, card.id) });
+}
 
 // A few catalog pictures are missing on TCGplayer's side: show the name instead of a broken image.
 document.addEventListener('error', e => {
@@ -771,19 +819,25 @@ function cardInfo(id) {
 
 function openCard(id) {
   if (!cardInfo(id)) return;
-  ui.modal = { type: 'card', id };
+  let cur = 'THB';
+  try { cur = localStorage.getItem(CUR_KEY) === 'USD' ? 'USD' : 'THB'; } catch {}
+  ui.modal = { type: 'card', id, form: { graded: false, grader: 'PSA', grade: '10', cert: '', paid: '', cur } };
   drawCard();
   loadPrice(id);
   showModal();
 }
 
 function drawCard() {
-  const { id } = ui.modal;
+  const { id, form } = ui.modal;
   const card = cardInfo(id);
   const own = store.ownership(id);
   const total = own.reduce((n, x) => n + x.qty, 0);
   const target = targetBinder();
   const want = store.wanted(id);
+  const copies = store.copiesOf(id);
+  const paid = {};
+  for (const { copy } of copies) if (copy.paid > 0) paid[copy.cur] = (paid[copy.cur] || 0) + copy.paid;
+  const chip = (attr, value, on, label = value) => `<button class="chip${on ? ' on' : ''}" ${attr}="${esc(value)}">${esc(label)}</button>`;
   $('#modal-body').innerHTML = `<div class="detail">
     ${card.image ? `<img class="detail-img" src="${esc(imgUrl(card, 'high'))}" alt="${esc(card.name)}">` : ''}
     <h3>${esc(card.name)}</h3>
@@ -802,29 +856,78 @@ function drawCard() {
           <b>${qty}</b>
           <button class="btn" data-act="inc" data-binder="${esc(binder.id)}" aria-label="One more">+</button>
         </div>
-      </div>`).join('')}
+      </div>
+      ${copies.filter(x => x.binder.id === binder.id).map(({ copy }) => `<div class="copy-row">
+        <span class="copy-grade${copy.grader ? ' graded' : ''}">${esc(gradeLabel(copy))}</span>
+        <span class="copy-info">${[copy.paid > 0 ? money(copy.paid, copy.cur) : '', copy.date].filter(Boolean).map(esc).join(' · ')}
+          ${copy.cert ? (CERT_LINKS[copy.grader]
+            ? ` · <a href="${esc(CERT_LINKS[copy.grader](copy.cert))}" target="_blank" rel="noopener">#${esc(copy.cert)} ↗</a>`
+            : ` · #${esc(copy.cert)}`) : ''}</span>
+        <button class="copy-remove" data-act="rmcopy" data-binder="${esc(binder.id)}" data-copy="${esc(copy.id)}" aria-label="Remove this copy">✕</button>
+      </div>`).join('')}`).join('')}
+      ${Object.keys(paid).length ? `<p class="paid-total">You paid: ${Object.entries(paid).map(([cur, sum]) => money(sum, cur)).join(' + ')}</p>` : ''}
     </div>` : ''}
-    <div class="add-row">
-      <select id="add-to" aria-label="Binder">${store.binders().map(b =>
-        `<option value="${esc(b.id)}"${b.id === target?.id ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select>
-      <button class="btn primary" data-act="add">${own.length ? 'Add another' : 'Add to binder'}</button>
+    <div class="add-box">
+      <div class="add-line">
+        <label for="add-to">Add to</label>
+        <select id="add-to">${store.binders().map(b =>
+          `<option value="${esc(b.id)}"${b.id === target?.id ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select>
+      </div>
+      <div class="chips">${chip('data-cond', 'raw', !form.graded, 'Raw')}${chip('data-cond', 'graded', form.graded, 'Graded')}</div>
+      ${form.graded ? `
+        <div class="chips">${Object.keys(GRADERS).map(g => chip('data-grader', g, g === form.grader)).join('')}</div>
+        <div class="chips grades">${GRADERS[form.grader].map(g => chip('data-grade', g, g === form.grade)).join('')}</div>
+        <input id="add-cert" inputmode="numeric" maxlength="20" placeholder="Cert number (optional)" value="${esc(form.cert)}">` : ''}
+      <label class="add-label" for="add-paid">How much you got it for <small>(optional)</small></label>
+      <div class="price-row">
+        <input id="add-paid" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0" value="${esc(form.paid)}">
+        <div class="chips">${chip('data-cur', 'THB', form.cur === 'THB', '฿ THB')}${chip('data-cur', 'USD', form.cur === 'USD', '$ USD')}</div>
+      </div>
+      <button class="btn primary add-btn" data-act="add">${own.length ? 'Add another' : 'Add to binder'}</button>
     </div>
   </div>`;
 }
 
+$('#modal-body').addEventListener('input', e => {
+  if (ui.modal?.type !== 'card') return;
+  if (e.target.id === 'add-paid') ui.modal.form.paid = e.target.value;
+  else if (e.target.id === 'add-cert') ui.modal.form.cert = e.target.value.trim();
+});
+
 $('#modal-body').addEventListener('click', e => {
-  const btn = e.target.closest('[data-act]');
-  if (!btn || ui.modal?.type !== 'card') return;
+  if (ui.modal?.type !== 'card') return;
+  const { form } = ui.modal;
+  const t = e.target.closest('button');
+  if (!t) return;
+  // Add-box choices: just redraw with the new choice.
+  if (t.dataset.cond) { form.graded = t.dataset.cond === 'graded'; return drawCard(); }
+  if (t.dataset.grader) { form.grader = t.dataset.grader; form.grade = GRADERS[form.grader][0]; return drawCard(); }
+  if (t.dataset.grade) { form.grade = t.dataset.grade; return drawCard(); }
+  if (t.dataset.cur) {
+    form.cur = t.dataset.cur;
+    try { localStorage.setItem(CUR_KEY, form.cur); } catch {}
+    return drawCard();
+  }
+  const act = t.dataset.act;
+  if (!act) return;
   const card = cardInfo(ui.modal.id);
-  const act = btn.dataset.act;
   if (act === 'add') {
     const binderId = $('#add-to').value;
     localStorage.setItem(TARGET_KEY, binderId);
-    store.setQty(binderId, card, store.ownedTotal(card.id, binderId) + 1);
-    toast(`Added ${card.name} to ${store.binder(binderId).name}`);
-  } else if (act === 'inc' || act === 'dec') {
-    const binderId = btn.dataset.binder;
-    store.setQty(binderId, card, store.ownedTotal(card.id, binderId) + (act === 'inc' ? 1 : -1));
+    const price = parseFloat(form.paid);
+    const details = {};
+    if (form.graded) Object.assign(details, { grader: form.grader, grade: form.grade }, form.cert ? { cert: form.cert } : {});
+    if (price > 0) Object.assign(details, { paid: price, cur: form.cur });
+    store.addCopy(binderId, card, Object.keys(details).length ? details : null);
+    Object.assign(form, { paid: '', cert: '' });
+    const what = [details.grader && `${details.grader} ${details.grade}`, details.paid && money(details.paid, details.cur)].filter(Boolean).join(', ');
+    toast(`Added ${card.name}${what ? ` (${what})` : ''} to ${store.binder(binderId).name}`);
+  } else if (act === 'inc') {
+    store.addCopy(t.dataset.binder, card);
+  } else if (act === 'dec') {
+    store.removeCopy(t.dataset.binder, card.id); // removes a copy without details first
+  } else if (act === 'rmcopy') {
+    store.removeCopy(t.dataset.binder, card.id, t.dataset.copy);
   } else if (act === 'want') {
     const want = !store.wanted(card.id);
     store.setWanted(card, want);
@@ -845,12 +948,19 @@ function showModal() { if (!$('#modal').open) $('#modal').showModal(); }
 $('#modal').addEventListener('close', () => { ui.modal = null; });
 
 let toastTimer;
-function toast(msg) {
+// action: optional { label, run } button, e.g. Undo.
+function toast(msg, action = null) {
   document.querySelector('.toast')?.remove();
-  const el = Object.assign(document.createElement('div'), { className: 'toast', textContent: msg });
+  const el = Object.assign(document.createElement('div'), { className: 'toast' });
+  el.append(msg);
+  if (action) {
+    const btn = Object.assign(document.createElement('button'), { className: 'toast-action', textContent: action.label });
+    btn.addEventListener('click', () => { action.run(); el.remove(); });
+    el.append(btn);
+  }
   ($('#modal').open ? $('#modal') : document.body).append(el); // dialogs sit above the page
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.remove(), 2200);
+  toastTimer = setTimeout(() => el.remove(), action ? 4500 : 2200);
 }
 
 // ---------- binder covers ----------
@@ -926,7 +1036,7 @@ function renderBinderView() {
         return `<div class="set-group">
           <h3><span>${esc(s?.label || list[0].setName || setId)} <small>${list.length}${s ? ` / ${s.cards}` : ''}</small></span>
             ${s ? `<button class="linkish" data-open-set="${esc(setId)}">Checklist →</button>` : ''}</h3>
-          <div class="grid">${list.sort(byNumber).map(c => tile(c, { qty: c.qty, times: true })).join('')}</div>
+          <div class="grid">${list.sort(byNumber).map(c => tile(c, { qty: c.qty, times: true, addTo: b.id })).join('')}</div>
         </div>`;
       }).join('') || `<div class="empty">No cards match “${esc(f)}”.</div>`}`;
   if (hadFocus) {

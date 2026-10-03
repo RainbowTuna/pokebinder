@@ -128,6 +128,7 @@ input:not([type=checkbox]):not([type=color]), select {
   border: 2px dashed var(--line); border-radius: 8px;
 }
 .tile .noimg small { color: var(--muted); font-size: .65rem; }
+.tile .num .jp { font-style: normal; color: #ffb3c1; font-weight: 800; margin-right: 4px; }
 .tile .lang-tag {
   position: absolute; bottom: 4px; right: 4px; font-size: .62rem; font-weight: 800;
   background: #fff; color: #bc002d; padding: 1px 5px; border-radius: 5px; box-shadow: 0 1px 2px rgb(0 0 0 / .3);
@@ -382,3 +383,36 @@ body.camera-open { overflow: hidden; }
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 40;
   font-weight: 600; box-shadow: var(--shadow); max-width: calc(100vw - 32px);
 }
+
+/* ---------- quick add, grades & prices ---------- */
+.tile .quick-add {
+  position: absolute; bottom: 4px; right: 4px; width: 28px; height: 28px; border-radius: 50%;
+  border: 2px solid #fff; background: var(--accent); color: #fff; font-size: 1rem; font-weight: 900; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+  box-shadow: 0 1px 4px rgb(0 0 0 / .4);
+}
+.tile .quick-add:active { transform: scale(.9); }
+.tile .grade-tag {
+  position: absolute; top: 30px; right: 6px; background: linear-gradient(135deg, #f7d774, #c9a227);
+  color: #3b2c00; font-size: .66rem; font-weight: 900; padding: 1px 6px; border-radius: 4px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / .35);
+}
+.copy-row { display: flex; align-items: center; gap: 8px; padding: 4px 0 4px 20px; font-size: .85rem; }
+.copy-grade { font-weight: 700; color: var(--muted); }
+.copy-grade.graded { color: #c9a227; }
+.copy-info { flex: 1; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.copy-info a { color: inherit; }
+.copy-remove { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: .9rem; padding: 2px 6px; }
+.paid-total { margin: 8px 0 0; font-weight: 700; font-size: .9rem; }
+.add-box { margin-top: 14px; text-align: left; display: flex; flex-direction: column; gap: 10px;
+  border-top: 1px solid var(--line); padding-top: 14px; }
+.add-line { display: flex; align-items: center; gap: 10px; }
+.add-line label { font-weight: 700; white-space: nowrap; }
+.add-label { font-size: .85rem; font-weight: 700; margin-bottom: -4px; }
+.add-label small { color: var(--muted); font-weight: 500; }
+.chips.grades .chip { min-width: 44px; }
+.price-row { display: flex; gap: 8px; align-items: center; }
+.price-row input { flex: 1; }
+.add-btn { width: 100%; }
+.toast { display: flex; align-items: center; gap: 12px; }
+.toast-action { border: 0; background: none; color: #ffcb05; font-weight: 800; cursor: pointer; padding: 0; font-size: inherit; }

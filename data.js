@@ -86,6 +86,7 @@ const cardMeta = c => ({ id: c.id, name: c.name, localId: c.localId, image: c.im
 const cardRow = (binderId, c) => ({
   binder_id: binderId, card_id: c.id, name: c.name, local_id: c.localId, image: c.image,
   set_id: c.setId, set_name: c.setName, qty: c.qty, added_at: new Date(c.added).toISOString(),
+  copies: c.copies || [],
 });
 
 function commit(...ops) {
@@ -130,11 +131,49 @@ export function setQty(binderId, card, qty) {
   }
   const entry = cards[card.id] || {
     id: card.id, name: card.name, localId: card.localId, image: card.image || '',
-    setId: card.setId, setName: card.setName, added: Date.now(),
+    setId: card.setId, setName: card.setName, added: Date.now(), copies: [],
   };
   entry.qty = qty;
+  // Copy details (grade, price) belong to individual copies; drop extras when copies are removed.
+  entry.copies = (entry.copies || []).slice(0, qty);
   cards[card.id] = entry;
   commit({ t: 'card', row: cardRow(binderId, entry) });
+}
+
+/**
+ * Add one copy, optionally with details:
+ * { grader: 'PSA', grade: '10', cert: '12345678', paid: 45.5, cur: 'USD' | 'THB', date: '2026-10-03' }
+ */
+export function addCopy(binderId, card, details = null) {
+  const entry = state.cards[binderId]?.[card.id];
+  const copies = [...(entry?.copies || [])];
+  if (details) copies.push({ id: uuid(), date: new Date().toISOString().slice(0, 10), ...details });
+  const cards = (state.cards[binderId] ||= {});
+  cards[card.id] = {
+    ...(entry || {
+      id: card.id, name: card.name, localId: card.localId, image: card.image || '',
+      setId: card.setId, setName: card.setName, added: Date.now(),
+    }),
+    qty: (entry?.qty || 0) + 1,
+    copies,
+  };
+  commit({ t: 'card', row: cardRow(binderId, cards[card.id]) });
+}
+
+/** Remove one copy that has details (by its id), or a plain copy (copyId null). */
+export function removeCopy(binderId, cardId, copyId = null) {
+  const entry = state.cards[binderId]?.[cardId];
+  if (!entry) return;
+  if (entry.qty <= 1) return setQty(binderId, entry, 0);
+  entry.copies = (entry.copies || []).filter(c => c.id !== copyId);
+  entry.qty -= 1;
+  entry.copies = entry.copies.slice(0, entry.qty);
+  commit({ t: 'card', row: cardRow(binderId, entry) });
+}
+
+/** Every detailed copy of a card across binders: [{ binder, copy }]. */
+export function copiesOf(cardId) {
+  return binders().flatMap(b => (state.cards[b.id]?.[cardId]?.copies || []).map(copy => ({ binder: b, copy })));
 }
 
 export function createList(kind, name, spec) {
@@ -240,7 +279,14 @@ export async function flush() {
       let res;
       if (op.t === 'binder') res = await sb.from('binders').upsert(op.row);
       else if (op.t === 'delBinder') res = await sb.from('binders').delete().eq('id', op.id);
-      else if (op.t === 'card') res = await sb.from('binder_cards').upsert(op.row);
+      else if (op.t === 'card') {
+        res = await sb.from('binder_cards').upsert(op.row);
+        if (res.error && /copies/.test(res.error.message || '')) {
+          console.warn('Database has no "copies" column yet – run supabase-update-copies.sql. Saving without copy details.');
+          const { copies, ...rest } = op.row;
+          res = await sb.from('binder_cards').upsert(rest);
+        }
+      }
       else if (op.t === 'delCard') res = await sb.from('binder_cards').delete().eq('binder_id', op.binder_id).eq('card_id', op.card_id);
       else if (op.t === 'list') res = await sb.from('lists').upsert(op.row);
       else if (op.t === 'delList') res = await sb.from('lists').delete().eq('id', op.id);
@@ -286,7 +332,7 @@ export async function pull() {
   for (const r of cRows) {
     (s.cards[r.binder_id] ||= {})[r.card_id] = {
       id: r.card_id, name: r.name, localId: r.local_id, image: r.image, setId: r.set_id,
-      setName: r.set_name, qty: r.qty, added: Date.parse(r.added_at),
+      setName: r.set_name, qty: r.qty, added: Date.parse(r.added_at), copies: r.copies || [],
     };
   }
   state = s;
