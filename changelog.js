@@ -2,6 +2,16 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '2.0', date: '2026-10-03', title: 'New look',
+    items: [
+      'Tap a card and it lifts out of the grid, flies to the middle and flips over to show its details – and flies back when you close it.',
+      'Add cards is now one search bar with a camera button, plus small chips for your binder and English/Japanese.',
+      'Binders is cleaner: simple tabs, the binder shelf, and backup options in the ⋯ menu.',
+      'Calmer top bar so your cards stand out. Tap outside a card (or press Esc) to close it.',
+      'Animations now always play, even when your device asks for less motion.',
+    ],
+  },
+  {
     version: '1.9.1', date: '2026-10-03', title: 'Fix stuck +1 / −1',
     items: ['The little “+1” / “−1” bubbles no longer get stuck on screen when your device has animations turned down.'],
   },

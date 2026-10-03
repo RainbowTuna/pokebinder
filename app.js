@@ -1,10 +1,10 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=14';
-import * as catalog from './catalog.js?v=14';
-import { CARD_IMAGE_RELAY } from './config.js?v=14';
-import { CHANGELOG } from './changelog.js?v=14';
+import * as store from './data.js?v=15';
+import * as catalog from './catalog.js?v=15';
+import { CARD_IMAGE_RELAY } from './config.js?v=15';
+import { CHANGELOG } from './changelog.js?v=15';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -619,8 +619,8 @@ $('#search-form').addEventListener('submit', async e => {
 // EN / JP switch
 function renderLang() {
   $$('[data-lang]').forEach(b => b.classList.toggle('on', b.dataset.lang === lang));
-  $('#q-name').placeholder = lang === 'ja' ? 'Pikachu or ピカチュウ' : 'e.g. Pikachu';
-  $('#q-number').placeholder = lang === 'ja' ? 'SV4a 065/190' : '25/165';
+  $('#q-name').placeholder = lang === 'ja' ? 'Search Japanese cards' : 'Search cards';
+  $('#q-number').placeholder = lang === 'ja' ? 'SV4a 065' : 'No.';
 }
 $$('[data-lang]').forEach(b => b.addEventListener('click', () => {
   lang = b.dataset.lang;
@@ -792,12 +792,12 @@ document.addEventListener('click', e => {
   const quick = e.target.closest('[data-quick]');
   if (quick) return quickAdd(quick.dataset.quick, quick.dataset.binder, e);
   const t = e.target.closest('[data-card]');
-  if (t) openCard(t.dataset.card);
+  if (t) openCard(t.dataset.card, t);
 });
 document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.tile[data-card]')) {
     e.preventDefault();
-    openCard(e.target.dataset.card);
+    openCard(e.target.dataset.card, e.target);
   }
 });
 
@@ -834,7 +834,6 @@ function quickRemove(id, binderId, e) {
 // Little "+1" / "−1" that floats up from where you tapped.
 function floatAt(e, text, minus = false) {
   if (!e?.clientX && !e?.clientY) return;
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return; // animations off: skip the bubble
   const el = Object.assign(document.createElement('span'), { className: `float-count${minus ? ' minus' : ''}`, textContent: text });
   el.style.left = `${e.clientX}px`;
   el.style.top = `${e.clientY - 12}px`;
@@ -868,15 +867,139 @@ function cardInfo(id) {
   };
 }
 
-function openCard(id) {
-  if (!cardInfo(id)) return;
+function openCard(id, fromTile = null) {
+  if (!cardInfo(id) || flying) return;
   let cur = 'THB';
   try { cur = localStorage.getItem(CUR_KEY) === 'USD' ? 'USD' : 'THB'; } catch {}
   ui.modal = { type: 'card', id, form: { graded: false, grader: 'PSA', grade: '10', cert: '', paid: '', cur } };
   drawCard();
   loadPrice(id);
-  showModal();
+  if (fromTile) flyOpen(fromTile);
+  else showModal();
 }
+
+// ---------- card animation: out of the grid, to the middle, flip over to the details ----------
+const FLIP = 'perspective(1400px)';
+let flying = false;
+
+// Wait for an animation – but never longer than it should take, so a paused page
+// (hidden tab, power saving) can't leave the card stuck halfway.
+async function done(anim) {
+  const ms = (anim.effect?.getTiming().duration || 0) + 150;
+  await Promise.race([anim.finished.catch(() => {}), new Promise(r => setTimeout(r, ms))]);
+  if (anim.playState !== 'finished') { try { anim.finish(); } catch {} } // jump to the end state
+}
+
+function shade() {
+  const el = Object.assign(document.createElement('div'), { className: 'fly-shade' });
+  document.body.append(el);
+  return el;
+}
+
+// Where the big card sits in the middle of the screen.
+function centreBox() {
+  const w = Math.min(300, innerWidth * 0.72), h = w * 88 / 63;
+  return { x: (innerWidth - w) / 2, y: (innerHeight - h) / 2, w, h };
+}
+
+function flyingCard(src, box) {
+  const el = Object.assign(document.createElement('div'), { className: 'fly-card' });
+  Object.assign(el.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
+  if (src) el.append(Object.assign(new Image(), { src, alt: '' }));
+  document.body.append(el);
+  return el;
+}
+
+// Transform that puts a centre-box-sized element exactly over a tile.
+function overTile(rect, box) {
+  const dx = rect.left + rect.width / 2 - (box.x + box.w / 2);
+  const dy = rect.top + rect.height / 2 - (box.y + box.h / 2);
+  return `translate(${dx}px, ${dy}px) scale(${rect.width / box.w})`;
+}
+
+async function flyOpen(tile) {
+  const img = tile.querySelector('img');
+  const rect = tile.getBoundingClientRect();
+  if (!img || !rect.width) return showModal();
+  flying = true;
+  const box = centreBox();
+  const bg = shade();
+  const card = flyingCard(img.currentSrc || img.src, box);
+  const hi = $('#modal-body .detail-img');
+  tile.classList.add('lifted');
+  try {
+    done(bg.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 380, fill: 'forwards' }));
+    // 1. lift out of the grid and fly to the middle, with a little overshoot
+    await done(card.animate([
+      { transform: overTile(rect, box), boxShadow: '0 2px 6px rgb(0 0 0 / .2)' },
+      { transform: 'translateY(-6px) scale(1.07)', offset: 0.7 },
+      { transform: 'none', boxShadow: '0 30px 60px rgb(0 0 0 / .5)' },
+    ], { duration: 460, easing: 'cubic-bezier(.2, .8, .25, 1)' }));
+    // 2. flip over: the card turns away…
+    await done(card.animate([{ transform: `${FLIP} rotateY(0deg)` }, { transform: `${FLIP} rotateY(90deg)` }],
+      { duration: 170, easing: 'ease-in', fill: 'forwards' }));
+    // …and the details turn into view on its back.
+    showModal();
+    done($('#modal').animate([{ transform: `${FLIP} rotateY(-90deg)` }, { transform: `${FLIP} rotateY(0deg)` }],
+      { duration: 240, easing: 'cubic-bezier(.2, .9, .3, 1.15)' }));
+  } finally {
+    card.remove();
+    bg.remove();
+    tile.classList.remove('lifted');
+    flying = false;
+  }
+  if (hi && !hi.complete) hi.decode?.().catch(() => {});
+}
+
+// Close the card the other way round: flip back, fly home into its spot in the grid.
+async function closeCard() {
+  const dialog = $('#modal');
+  const id = ui.modal?.id;
+  if (flying) return;
+  const tile = [...document.querySelectorAll(`.tile[data-card="${CSS.escape(id || '')}"]`)].find(t => t.offsetParent && t.querySelector('img'));
+  const rect = tile?.getBoundingClientRect();
+  const onScreen = rect && rect.bottom > 0 && rect.top < innerHeight;
+  flying = true;
+  try {
+    await done(dialog.animate([{ transform: `${FLIP} rotateY(0deg)` }, { transform: `${FLIP} rotateY(90deg)` }],
+      { duration: 170, easing: 'ease-in', fill: 'forwards' }));
+    dialog.close();
+    dialog.getAnimations().forEach(a => a.cancel());
+    if (!onScreen) return;
+    const box = centreBox();
+    const bg = shade();
+    const card = flyingCard(tile.querySelector('img').currentSrc || tile.querySelector('img').src, box);
+    tile.classList.add('lifted');
+    try {
+      await done(card.animate([{ transform: `${FLIP} rotateY(-90deg)` }, { transform: `${FLIP} rotateY(0deg)` }],
+        { duration: 170, easing: 'ease-out' }));
+      done(bg.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 380, fill: 'forwards' }));
+      await done(card.animate([
+        { transform: 'none', boxShadow: '0 30px 60px rgb(0 0 0 / .5)' },
+        { transform: overTile(rect, box), boxShadow: '0 2px 6px rgb(0 0 0 / .2)' },
+      ], { duration: 380, easing: 'cubic-bezier(.4, 0, .2, 1)' }));
+    } finally {
+      card.remove();
+      bg.remove();
+      tile.classList.remove('lifted');
+    }
+  } finally {
+    flying = false;
+  }
+}
+
+function closeModal() {
+  if (ui.modal?.type === 'card') return closeCard();
+  $('#modal').close();
+}
+$('#modal-close').addEventListener('click', closeModal);
+$('#modal').addEventListener('cancel', e => { e.preventDefault(); closeModal(); }); // Esc key
+// Tap outside the box to close.
+$('#modal').addEventListener('click', e => {
+  if (e.target !== $('#modal')) return;
+  const r = $('#modal').getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) closeModal();
+});
 
 function drawCard() {
   const { id, form } = ui.modal;
@@ -1655,6 +1778,12 @@ $('#whats-new').addEventListener('click', () => {
 });
 
 // ---------- backup ----------
+// The ⋯ menu closes after picking something, or when tapping elsewhere.
+document.addEventListener('click', e => {
+  const menu = $('#more-menu');
+  if (menu.open && (!menu.contains(e.target) || e.target.closest('.menu'))) setTimeout(() => menu.removeAttribute('open'), 0);
+});
+
 $('#export').addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(store.exportData(), null, 2)], { type: 'application/json' });
   const a = Object.assign(document.createElement('a'), {

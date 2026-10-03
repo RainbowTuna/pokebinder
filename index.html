@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#e3350d">
+  <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#15151b" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="PokéBinder">
@@ -11,10 +12,10 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js" defer></script>
   <!-- On every release: add an entry to changelog.js and bump ?v= here and in app.js's imports, so phones never mix old and new files. -->
-  <script type="module" src="app.js?v=14"></script>
+  <script type="module" src="app.js?v=15"></script>
 </head>
 <body>
   <header class="topbar">
@@ -28,54 +29,57 @@
   <main>
     <!-- ADD CARDS -->
     <section id="tab-add" class="tab active">
-      <div class="panel target">
-        <label for="target">Adding to</label>
-        <select id="target"></select>
+      <form id="search-form" class="searchbar" role="search">
+        <svg class="sb-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+        <input id="q-name" placeholder="Search cards" autocomplete="off" enterkeyhint="search" aria-label="Card name">
+        <input id="q-number" class="sb-number" placeholder="No." autocomplete="off" enterkeyhint="search" aria-label="Card number">
+        <button type="submit" class="sr-only">Find</button>
+        <button type="button" id="scan-btn" class="sb-scan" aria-label="Scan a card" title="Scan a card">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A2.5 2.5 0 0 1 6.5 6H8l1.5-2h5L16 6h1.5A2.5 2.5 0 0 1 20 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.5"/></svg>
+        </button>
+      </form>
+
+      <div class="chip-row">
+        <label class="chip select-chip" title="Binder new cards go into">
+          <span aria-hidden="true">📒</span><select id="target" aria-label="Adding to"></select>
+        </label>
+        <div class="lang-toggle" role="group" aria-label="Card language">
+          <button class="chip" data-lang="en">EN</button>
+          <button class="chip" data-lang="ja">JP</button>
+        </div>
+        <label class="chip ghost" for="photo">Photo</label>
+        <input id="photo" type="file" accept="image/*" hidden>
       </div>
 
-      <div class="panel scan">
-        <div class="lang-switch" role="group" aria-label="Card language">
-          <button class="chip" data-lang="en">🇬🇧 English cards</button>
-          <button class="chip" data-lang="ja">🇯🇵 Japanese cards</button>
-        </div>
-        <button class="btn primary big" id="scan-btn">📷 Scan a card</button>
-        <input id="photo" type="file" accept="image/*" hidden>
-        <p class="hint">Fit the card inside the frame. Use good light and avoid glare on the number in the bottom corner.
-          <br><label class="linkish" for="photo">or choose a photo</label></p>
-        <div class="preview-wrap" hidden><img id="preview" alt="Scanned card"></div>
+      <div class="preview-wrap scan-row" hidden>
+        <img id="preview" alt="Scanned card">
         <div id="scan-status" class="status" aria-live="polite"></div>
       </div>
 
-      <form id="search-form" class="panel search">
-        <div class="field">
-          <label for="q-name">Card name</label>
-          <input id="q-name" placeholder="e.g. Pikachu" autocomplete="off">
-        </div>
-        <div class="field small">
-          <label for="q-number">Number</label>
-          <input id="q-number" placeholder="25/165" autocomplete="off">
-        </div>
-        <button class="btn primary" type="submit">Find</button>
-      </form>
-
       <div id="results-head" class="results-head"></div>
       <div id="results" class="grid"></div>
+      <p class="add-empty">Search by name or number,<br>or tap the camera to scan a card.</p>
     </section>
 
     <!-- BINDERS -->
     <section id="tab-binders" class="tab">
-      <div class="segmented" id="binder-seg">
-        <button class="seg active" data-view="shelf">My binders</button>
-        <button class="seg" data-view="lists">Checklists</button>
+      <div class="tabs-row">
+        <div class="text-tabs" id="binder-seg">
+          <button class="seg active" data-view="shelf">Binders</button>
+          <button class="seg" data-view="lists">Checklists</button>
+        </div>
+        <details class="more" id="more-menu">
+          <summary aria-label="More options">⋯</summary>
+          <div class="menu">
+            <button id="export">Export backup</button>
+            <label for="import">Import backup</label>
+          </div>
+        </details>
+        <input id="import" type="file" accept="application/json,.json" hidden>
       </div>
 
       <div id="view-shelf" class="view">
         <div id="shelf" class="shelf"></div>
-        <div class="backup">
-          <button id="export" class="btn ghost">⬇ Export backup</button>
-          <label class="btn ghost" for="import">⬆ Import backup</label>
-          <input id="import" type="file" accept="application/json,.json" hidden>
-        </div>
       </div>
 
       <div id="view-binder" class="view" hidden></div>
@@ -107,7 +111,7 @@
   </div>
 
   <dialog id="modal">
-    <form method="dialog"><button class="close" aria-label="Close">✕</button></form>
+    <button class="close" id="modal-close" aria-label="Close">✕</button>
     <div id="modal-body"></div>
   </dialog>
 </body>
