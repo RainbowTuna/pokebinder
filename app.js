@@ -1,10 +1,10 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=13';
-import * as catalog from './catalog.js?v=13';
-import { CARD_IMAGE_RELAY } from './config.js?v=13';
-import { CHANGELOG } from './changelog.js?v=13';
+import * as store from './data.js?v=14';
+import * as catalog from './catalog.js?v=14';
+import { CARD_IMAGE_RELAY } from './config.js?v=14';
+import { CHANGELOG } from './changelog.js?v=14';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -834,11 +834,14 @@ function quickRemove(id, binderId, e) {
 // Little "+1" / "−1" that floats up from where you tapped.
 function floatAt(e, text, minus = false) {
   if (!e?.clientX && !e?.clientY) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return; // animations off: skip the bubble
   const el = Object.assign(document.createElement('span'), { className: `float-count${minus ? ' minus' : ''}`, textContent: text });
   el.style.left = `${e.clientX}px`;
   el.style.top = `${e.clientY - 12}px`;
   document.body.append(el);
+  // Remove it when the float-up ends – and after a second regardless, in case the animation never runs.
   el.addEventListener('animationend', () => el.remove());
+  setTimeout(() => el.remove(), 1000);
 }
 
 // Make the count on the card's tiles pop (tiles were just redrawn with the new number).
