@@ -1,10 +1,10 @@
 // PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
 // Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
 // OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=12';
-import * as catalog from './catalog.js?v=12';
-import { CARD_IMAGE_RELAY } from './config.js?v=12';
-import { CHANGELOG } from './changelog.js?v=12';
+import * as store from './data.js?v=13';
+import * as catalog from './catalog.js?v=13';
+import { CARD_IMAGE_RELAY } from './config.js?v=13';
+import { CHANGELOG } from './changelog.js?v=13';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -766,19 +766,31 @@ function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = 
   const src = imgUrl(card);
   const code = showSet ? setsCache?.byId.get(card.setId)?.code : '';
   const graded = qty ? bestGrade(card.id) : '';
+  // The ＋ becomes "− n +" once the card is in the binder it adds to.
+  const into = store.binder(addTo) || targetBinder();
+  const here = into ? store.ownedTotal(card.id, into.id) : 0;
+  const id = esc(card.id), bid = esc(into?.id || '');
   return `<div class="tile${missing && !qty ? ' missing' : ''}${best ? ' best' : ''}" role="button" tabindex="0" data-card="${esc(card.id)}" title="${esc(card.name)}">
     ${src ? `<img src="${esc(src)}" alt="${esc(card.name)}" loading="lazy">` : `<span class="noimg"><b>${esc(card.name)}</b><small>No picture yet</small></span>`}
-    ${qty ? `<span class="badge">${times ? '×' : '✓ '}${qty}</span>` : ''}
+    ${qty && qty !== here ? `<span class="badge">${times ? '×' : '✓ '}${qty}</span>` : ''}
     ${graded ? `<span class="grade-tag">${esc(graded)}</span>` : ''}
     ${store.wanted(card.id) ? '<span class="want-tag" title="On your wishlist">★</span>' : ''}
     <span class="num">${langOfCard(card) === 'ja' ? '<i class="jp">JP</i>' : ''}${esc([code, card.localId].filter(Boolean).join(' '))}</span>
-    <button class="quick-add" data-quick="${esc(card.id)}"${addTo ? ` data-binder="${esc(addTo)}"` : ''} aria-label="Add one to binder" title="Add 1 to binder">＋</button>
+    ${here
+      ? `<div class="quick-step" title="Copies in ${esc(into.name)}">
+          <button data-quick-dec="${id}" data-binder="${bid}" aria-label="Remove one from ${esc(into.name)}">−</button>
+          <b>${here}</b>
+          <button data-quick="${id}" data-binder="${bid}" aria-label="Add one to ${esc(into.name)}">+</button>
+        </div>`
+      : `<button class="quick-add" data-quick="${id}" data-binder="${bid}" aria-label="Add one to ${esc(into?.name || 'binder')}" title="Add 1 to ${esc(into?.name || 'binder')}">＋</button>`}
   </div>`;
 }
 
 document.addEventListener('click', e => {
+  const dec = e.target.closest('[data-quick-dec]');
+  if (dec) return quickRemove(dec.dataset.quickDec, dec.dataset.binder, e);
   const quick = e.target.closest('[data-quick]');
-  if (quick) return quickAdd(quick.dataset.quick, quick.dataset.binder);
+  if (quick) return quickAdd(quick.dataset.quick, quick.dataset.binder, e);
   const t = e.target.closest('[data-card]');
   if (t) openCard(t.dataset.card);
 });
@@ -790,12 +802,48 @@ document.addEventListener('keydown', e => {
 });
 
 // ＋ on a tile: one more copy in the binder you're adding to (or the binder you're looking at).
-function quickAdd(id, binderId) {
+function quickAdd(id, binderId, e) {
   const card = cardInfo(id);
   const b = store.binder(binderId) || targetBinder();
   if (!card || !b) return;
   store.addCopy(b.id, card);
+  floatAt(e, '+1');
+  bump(id);
   toast(`Added ${card.name} to ${b.name}`, { label: 'Undo', run: () => store.removeCopy(b.id, card.id) });
+}
+
+// − on a tile: one copy less. Plain copies go first; a copy with a grade or price needs a yes.
+function quickRemove(id, binderId, e) {
+  const card = cardInfo(id);
+  const b = store.binder(binderId);
+  if (!card || !b) return;
+  const detailed = store.copiesOf(id).filter(x => x.binder.id === b.id).map(x => x.copy);
+  if (store.ownedTotal(id, b.id) <= detailed.length) {
+    const last = detailed[detailed.length - 1];
+    const what = [gradeLabel(last), last.paid > 0 ? money(last.paid, last.cur) : ''].filter(Boolean).join(', ');
+    if (!confirm(`Remove your ${what} copy of ${card.name} from ${b.name}?`)) return;
+    store.removeCopy(b.id, id, last.id);
+  } else {
+    store.removeCopy(b.id, id);
+    toast(`Removed one ${card.name} from ${b.name}`, { label: 'Undo', run: () => store.addCopy(b.id, card) });
+  }
+  floatAt(e, '−1', true);
+  bump(id);
+}
+
+// Little "+1" / "−1" that floats up from where you tapped.
+function floatAt(e, text, minus = false) {
+  if (!e?.clientX && !e?.clientY) return;
+  const el = Object.assign(document.createElement('span'), { className: `float-count${minus ? ' minus' : ''}`, textContent: text });
+  el.style.left = `${e.clientX}px`;
+  el.style.top = `${e.clientY - 12}px`;
+  document.body.append(el);
+  el.addEventListener('animationend', () => el.remove());
+}
+
+// Make the count on the card's tiles pop (tiles were just redrawn with the new number).
+function bump(id) {
+  $$(`.tile[data-card="${CSS.escape(id)}"] .quick-step b`).forEach(el => el.classList.add('bump'));
 }
 
 // A few catalog pictures are missing on TCGplayer's side: show the name instead of a broken image.

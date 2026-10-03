@@ -2,6 +2,14 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '1.9', date: '2026-10-03', title: 'Quick − n + on cards',
+    items: [
+      'Once a card is in your binder, its ＋ turns into “− 2 +” so you can add or remove copies right on the card.',
+      'Removing a plain copy can be undone; removing a graded or priced copy asks first.',
+      'The ＋ button now spins and glows when you point at it, and a little “+1” floats up when you tap.',
+    ],
+  },
+  {
     version: '1.8', date: '2026-10-03', title: 'Graded cards, prices & quick add',
     items: [
       '＋ button on every card: tap to add one to your binder straight away (with Undo).',
