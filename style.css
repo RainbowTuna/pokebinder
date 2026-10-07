@@ -651,3 +651,5 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .pocket.vacant:hover .plan-plus { opacity: 1; color: var(--accent); transform: scale(1.2); }
 .picker-h { margin: 16px 0 4px; font-size: .95rem; }
 .picker-note { margin-top: 12px; }
+.ghost-chip { background: transparent; color: var(--muted); }
+.ghost-chip:hover { color: var(--text); border-color: var(--muted); }

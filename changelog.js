@@ -2,6 +2,14 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '2.4', date: '2026-10-07', title: 'Clear & restore pages',
+    items: [
+      '🧹 Clear pages (in ✋ Arrange) takes every card off the pages and back to the tray, so you can start from empty pages again.',
+      'Your arrangement is saved first – tap ↺ Restore layout (or Undo) to bring it back.',
+      'As always, every move you make on the pages is saved automatically.',
+    ],
+  },
+  {
     version: '2.3', date: '2026-10-07', title: 'You fill the pages',
     items: [
       'Binder pages now start empty – you decide where every card goes.',

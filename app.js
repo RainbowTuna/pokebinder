@@ -1,8 +1,8 @@
 
-import * as store from './data.js?v=18';
-import * as catalog from './catalog.js?v=18';
-import { CARD_IMAGE_RELAY } from './config.js?v=18';
-import { CHANGELOG } from './changelog.js?v=18';
+import * as store from './data.js?v=19';
+import * as catalog from './catalog.js?v=19';
+import { CARD_IMAGE_RELAY } from './config.js?v=19';
+import { CHANGELOG } from './changelog.js?v=19';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -1207,14 +1207,39 @@ function binderLayout(b) {
   return { size, per, all, owned, planned, pages, unplaced };
 }
 
-function saveLayout(b, all, size, planned) {
+// saved: the arrangement from before "Clear pages", kept so it can be restored.
+function saveLayout(b, all, size, planned, saved = b.layout?.saved || null) {
   let last = all.length;
   while (last && !all[last - 1]) last--;
   const slots = all.slice(0, last);
   const owned = new Set(store.cardsIn(b.id).map(c => c.id));
   // Only keep planned cards that still sit in a pocket and aren't owned yet.
   const keep = Object.fromEntries(Object.entries(planned).filter(([id]) => slots.includes(id) && !owned.has(id)));
-  store.setLayout(b.id, { size, slots, planned: keep });
+  store.setLayout(b.id, { size, slots, planned: keep, saved });
+}
+
+// Take every card off the pages (back to the tray) – but keep the arrangement so it can come back.
+function clearPages(b) {
+  const L = binderLayout(b);
+  const placed = L.all.filter(Boolean).length;
+  if (!placed) return;
+  if (!confirm(`Take all ${placed} card${placed === 1 ? '' : 's'} off the pages? They go back to the tray.\n\nYour current layout is saved – tap “↺ Restore layout” to bring it back.`)) return;
+  const saved = { size: L.size, slots: b.layout?.slots || [], planned: b.layout?.planned || {}, at: Date.now() };
+  saveLayout(b, [], L.size, {}, saved);
+  binderUi[b.id].page = 0;
+  binderUi[b.id].pick = null;
+  toast('Pages cleared', { label: 'Undo', run: () => restoreLayout(b, true) });
+}
+
+function restoreLayout(b, quiet = false) {
+  const saved = b.layout?.saved;
+  if (!saved) return;
+  const placed = binderLayout(b).all.filter(Boolean).length;
+  const when = new Date(saved.at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  if (!quiet && placed && !confirm(`Replace your current pages with the layout saved on ${when}? The cards on the pages now go back to the tray.`)) return;
+  store.setLayout(b.id, { size: saved.size, slots: saved.slots, planned: saved.planned, saved: null });
+  binderUi[b.id].page = 0;
+  if (!quiet) toast('Layout restored');
 }
 
 const spreadSize = () => (innerWidth >= 900 ? 2 : 1); // two pages side by side on wide screens
@@ -1316,7 +1341,9 @@ function renderBinderView() {
       ${toggle('data-mode', [['pages', 'Pages'], ['list', 'List']], st.mode)}
       ${st.mode === 'pages' ? `
         ${toggle('data-size', SIZES.map(n => [n, `${n}×${n}`]), L.size)}
-        <button class="chip arrange-btn${st.arrange ? ' on' : ''}" data-arrange>${st.arrange ? '✓ Done' : '✋ Arrange'}</button>` : ''}
+        <button class="chip arrange-btn${st.arrange ? ' on' : ''}" data-arrange>${st.arrange ? '✓ Done' : '✋ Arrange'}</button>
+        ${st.arrange && L.all.some(Boolean) ? '<button class="chip ghost-chip" data-clear>🧹 Clear pages</button>' : ''}
+        ${st.arrange && b.layout?.saved ? '<button class="chip ghost-chip" data-restore>↺ Restore layout</button>' : ''}` : ''}
     </div>
     ${st.mode === 'pages'
       ? pagesHTML(b, L, st)
@@ -1369,6 +1396,8 @@ $('#view-binder').addEventListener('click', e => {
     return;
   }
   if (t?.hasAttribute('data-arrange')) { st.arrange = !st.arrange; st.pick = null; return renderBinderView(); }
+  if (t?.hasAttribute('data-clear')) return clearPages(b);
+  if (t?.hasAttribute('data-restore')) return restoreLayout(b);
   if (t?.dataset.page) return turnPage(b, +t.dataset.page);
 
   const L = binderLayout(b);
