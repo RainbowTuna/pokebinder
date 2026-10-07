@@ -2,6 +2,15 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '2.1', date: '2026-10-07', title: 'Binder pages & planning',
+    items: [
+      'Binders now show real pages – choose 2×2, 3×3 or 4×4 pockets per page. Two pages side by side on a computer, swipe or ‹ › to turn pages.',
+      '✋ Arrange: tap a card, then tap the pocket it should go to. Leave gaps wherever you like.',
+      'Plan ahead: tap ＋ in an empty pocket to place a card you don’t own yet – it shows greyed until you get it, then tap its ＋.',
+      'The old grouped view is still there under “List”.',
+    ],
+  },
+  {
     version: '2.0', date: '2026-10-03', title: 'New look',
     items: [
       'Tap a card and it lifts out of the grid, flies to the middle and flips over to show its details – and flies back when you close it.',

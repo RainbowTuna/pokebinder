@@ -80,7 +80,9 @@ export const wishlist = () => state.lists.find(l => l.kind === 'wishlist');
 export const wanted = cardId => !!wishlist()?.spec.cards?.[cardId];
 
 // ---------- writing ----------
-const binderRow = b => ({ id: b.id, name: b.name, cover: b.cover, position: b.position });
+// The page layout (pocket size, card positions, planned cards) travels inside the cover settings,
+// so it syncs without a database change.
+const binderRow = b => ({ id: b.id, name: b.name, cover: { ...b.cover, layout: b.layout || null }, position: b.position });
 const listRow = l => ({ id: l.id, kind: l.kind, name: l.name, spec: l.spec, position: l.position });
 const cardMeta = c => ({ id: c.id, name: c.name, localId: c.localId, image: c.image || '', setId: c.setId, setName: c.setName });
 const cardRow = (binderId, c) => ({
@@ -112,6 +114,11 @@ export function updateBinder(id, patch) {
   if (!b) return;
   Object.assign(b, patch);
   commit({ t: 'binder', row: binderRow(b) });
+}
+
+/** layout: { size: 2 | 3 | 4, slots: [cardId | null, …], planned: { cardId: card } } */
+export function setLayout(id, layout) {
+  updateBinder(id, { layout });
 }
 
 export function deleteBinder(id) {
@@ -327,7 +334,9 @@ export async function pull() {
   if (v !== version || queue.length || !user) return; // something changed meanwhile – next pull will catch up
   const s = blank(user.id);
   s.lists = lRows ? lRows.map(r => ({ id: r.id, kind: r.kind, name: r.name, spec: r.spec || {}, position: r.position, created: r.created_at })) : state.lists;
-  s.binders = bRows.map(r => ({ id: r.id, name: r.name, cover: r.cover || {}, position: r.position, created: r.created_at }));
+  s.binders = bRows.map(r => ({
+    id: r.id, name: r.name, cover: r.cover || {}, layout: r.cover?.layout || null, position: r.position, created: r.created_at,
+  }));
   s.binders.forEach(b => { s.cards[b.id] = {}; });
   for (const r of cRows) {
     (s.cards[r.binder_id] ||= {})[r.card_id] = {

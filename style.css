@@ -534,3 +534,87 @@ body.camera-open { overflow: hidden; }
 }
 .fly-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
 dialog { transform-origin: center; }
+
+/* ---------- binder pages ---------- */
+.binder-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.pill-toggle { display: inline-flex; padding: 2px; background: var(--slot); border-radius: 999px; }
+.pill-toggle .chip { border: 0; background: transparent; padding: 5px 12px; transition: background-color .2s ease, color .2s ease; }
+.pill-toggle .chip.on { background: var(--accent); color: var(--accent-ink); }
+.arrange-btn { background: var(--surface); }
+.arrange-btn.on { background: var(--ok); color: #fff; border-color: transparent; }
+
+.page-nav { display: flex; align-items: center; justify-content: center; gap: 14px; margin-bottom: 10px; font-weight: 700; }
+.page-nav small { color: var(--muted); font-weight: 500; }
+.page-btn {
+  width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface);
+  font-size: 1.3rem; line-height: 1; cursor: pointer; transition: transform .15s ease;
+}
+.page-btn:hover:not(:disabled) { transform: scale(1.1); }
+.page-btn:disabled { opacity: .3; cursor: default; }
+.spread {
+  position: relative; display: grid; grid-template-columns: repeat(var(--pages), minmax(0, 1fr)); gap: 26px;
+  max-width: calc(var(--pages) * 520px); margin: 0 auto; touch-action: pan-y;
+}
+.spread[style*="--pages:2"]::before { /* binder rings between the two pages */
+  content: ""; position: absolute; left: 50%; top: 8%; bottom: 8%; width: 12px; transform: translateX(-50%);
+  background: radial-gradient(circle, #c9c9cf 0 4px, #6f6f78 4px 6px, transparent 6px) center 0 / 12px 25% repeat-y;
+}
+.page {
+  display: grid; grid-template-columns: repeat(var(--size), minmax(0, 1fr)); gap: 6px; padding: 10px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--surface) 92%, #fff), var(--surface));
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgb(0 0 0 / .18);
+}
+.pocket {
+  position: relative; aspect-ratio: 63 / 88; border-radius: 6px; background: var(--slot);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / .08);
+}
+.pocket::after { /* plastic sleeve shine */
+  content: ""; position: absolute; inset: 0; border-radius: 6px; pointer-events: none;
+  background: linear-gradient(115deg, rgb(255 255 255 / .16), transparent 35%, transparent 65%, rgb(255 255 255 / .06));
+}
+.pocket .tile { width: 100%; height: 100%; border-radius: 6px; }
+.pocket.vacant { display: flex; align-items: center; justify-content: center; }
+.pocket.planned .tile img { filter: grayscale(1); opacity: .5; }
+.planned-tag {
+  position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%); z-index: 2; pointer-events: none;
+  background: rgb(0 0 0 / .65); color: #fff; font-size: .62rem; font-weight: 800; padding: 2px 7px; border-radius: 999px;
+}
+.page.s4 .tile .num { display: none; }
+.page.s4 .tile .quick-add { width: 22px; height: 22px; font-size: .8rem; }
+.page.s4 .tile .quick-step { transform: scale(.78); transform-origin: bottom right; }
+.page.s4 .planned-tag { font-size: .5rem; padding: 1px 5px; }
+
+/* Arrange mode: cards wiggle gently; the picked one lifts. */
+.arranging .pocket { cursor: pointer; }
+.arranging .pocket:not(.vacant) .tile { animation: wiggle .9s ease-in-out infinite alternate; }
+.arranging .pocket:nth-child(2n) .tile { animation-delay: -.45s; }
+@keyframes wiggle { from { transform: rotate(-1.2deg); } to { transform: rotate(1.2deg); } }
+.arranging .pocket.vacant { border: 2px dashed var(--line); background: transparent; }
+.arranging .pocket.vacant:hover { border-color: var(--accent); }
+.plan-plus { font-size: 1.4rem; color: var(--muted); font-weight: 800; transition: transform .2s ease, color .2s ease; }
+.arranging .pocket.vacant:hover .plan-plus { color: var(--accent); transform: scale(1.2); }
+.pocket.picked { z-index: 3; transform: scale(1.08) translateY(-4px); box-shadow: 0 0 0 3px var(--accent), 0 14px 28px rgb(0 0 0 / .35); transition: transform .2s ease; }
+.pocket.picked .tile { animation: none; }
+.arranging .pocket.vacant.picked { border-color: var(--accent); }
+.unplan {
+  position: absolute; top: -6px; right: -6px; z-index: 4; width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--surface); background: #4a4a57; color: #fff; font-size: .7rem; cursor: pointer; padding: 0;
+}
+.arrange-hint { text-align: center; color: var(--muted); font-size: .88rem; margin: 12px 0 0; }
+
+/* plan picker */
+.plan-picker h3 { margin: 0 0 4px; }
+.plan-picker .searchbar { margin: 12px 0 8px; }
+.plan-lang { margin-bottom: 10px; }
+.plan-results { max-height: 50dvh; overflow-y: auto; }
+.plan-results .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.pick-card {
+  display: flex; flex-direction: column; gap: 4px; padding: 0; border: 0; background: none; cursor: pointer;
+  border-radius: 6px; transition: transform .15s ease;
+}
+.pick-card:hover { transform: translateY(-3px); }
+.pick-card img { width: 100%; aspect-ratio: 63 / 88; object-fit: cover; border-radius: 6px; background: var(--slot); }
+.pick-card small { color: var(--muted); font-size: .7rem; }
+.plan-picker .searchbar input { border: 0; background: transparent; border-radius: 0; padding: 10px 8px; min-width: 0; outline: none; }
+.plan-picker .searchbar #plan-q { flex: 1; }
+.plan-picker .searchbar .sb-number { flex: 0 0 80px; border-left: 1px solid var(--line); padding-left: 12px; }

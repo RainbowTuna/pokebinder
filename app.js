@@ -1,10 +1,8 @@
-// PokéBinder – scan Pokémon cards and keep digital binders, a wishlist and checklists.
-// Card list & pictures: TCGplayer's catalog (via TCGCSV), built into ./catalog by tools/build_catalog.py.
-// OCR: Tesseract.js, runs entirely in the browser.
-import * as store from './data.js?v=15';
-import * as catalog from './catalog.js?v=15';
-import { CARD_IMAGE_RELAY } from './config.js?v=15';
-import { CHANGELOG } from './changelog.js?v=15';
+
+import * as store from './data.js?v=16';
+import * as catalog from './catalog.js?v=16';
+import { CARD_IMAGE_RELAY } from './config.js?v=16';
+import { CHANGELOG } from './changelog.js?v=16';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -762,7 +760,7 @@ function bestGrade(cardId) {
 // ---------- tiles & card modal ----------
 // qty: number on the badge (defaults to copies across all binders); missing: grey out if not owned;
 // showSet: label with the set code too, for lists that mix sets; addTo: binder the ＋ button adds to.
-function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false, showSet = false, best = false, addTo = '' } = {}) {
+function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = false, showSet = false, best = false, addTo = '', inert = false } = {}) {
   const src = imgUrl(card);
   const code = showSet ? setsCache?.byId.get(card.setId)?.code : '';
   const graded = qty ? bestGrade(card.id) : '';
@@ -770,13 +768,14 @@ function tile(card, { qty = store.ownedTotal(card.id), missing = false, times = 
   const into = store.binder(addTo) || targetBinder();
   const here = into ? store.ownedTotal(card.id, into.id) : 0;
   const id = esc(card.id), bid = esc(into?.id || '');
-  return `<div class="tile${missing && !qty ? ' missing' : ''}${best ? ' best' : ''}" role="button" tabindex="0" data-card="${esc(card.id)}" title="${esc(card.name)}">
+  const opens = inert ? '' : ` role="button" tabindex="0" data-card="${esc(card.id)}"`;
+  return `<div class="tile${missing && !qty ? ' missing' : ''}${best ? ' best' : ''}"${opens} title="${esc(card.name)}">
     ${src ? `<img src="${esc(src)}" alt="${esc(card.name)}" loading="lazy">` : `<span class="noimg"><b>${esc(card.name)}</b><small>No picture yet</small></span>`}
     ${qty && qty !== here ? `<span class="badge">${times ? '×' : '✓ '}${qty}</span>` : ''}
     ${graded ? `<span class="grade-tag">${esc(graded)}</span>` : ''}
     ${store.wanted(card.id) ? '<span class="want-tag" title="On your wishlist">★</span>' : ''}
     <span class="num">${langOfCard(card) === 'ja' ? '<i class="jp">JP</i>' : ''}${esc([code, card.localId].filter(Boolean).join(' '))}</span>
-    ${here
+    ${inert ? '' : here
       ? `<div class="quick-step" title="Copies in ${esc(into.name)}">
           <button data-quick-dec="${id}" data-binder="${bid}" aria-label="Remove one from ${esc(into.name)}">−</button>
           <b>${here}</b>
@@ -1179,18 +1178,110 @@ $('#shelf').addEventListener('click', e => {
 });
 
 const byNumber = (a, b) => String(a.localId).localeCompare(String(b.localId), undefined, { numeric: true });
+// Default order for cards not placed yet: oldest set first, then by number.
+const setDate = c => setsCache?.byId.get(c.setId)?.date || '9999';
+const defaultOrder = (a, b) => setDate(a).localeCompare(setDate(b)) || String(a.setName).localeCompare(String(b.setName)) || byNumber(a, b);
+
+// ---------- binder pages ----------
+// A binder's layout: { size: 2 | 3 | 4 pockets per side, slots: [cardId | null, …], planned: { cardId: card } }.
+// slots says which card sits in which pocket (null = empty pocket). Planned cards are ones you
+// don't own yet, shown greyed in their pocket. Owned cards that haven't been placed follow
+// after the last placed card, so nothing ever goes missing.
+const binderUi = {}; // per binder: { mode: 'pages' | 'list', page, arrange, pick }
+const SIZES = [2, 3, 4];
+
+function binderLayout(b) {
+  const size = SIZES.includes(b.layout?.size) ? b.layout.size : 3;
+  const per = size * size;
+  const owned = new Map(store.cardsIn(b.id).map(c => [c.id, c]));
+  const planned = b.layout?.planned || {};
+  const slots = (b.layout?.slots || []).map(id => (id && (owned.has(id) || planned[id]) ? id : null));
+  const placed = new Set(slots.filter(Boolean));
+  let last = slots.length;
+  while (last && !slots[last - 1]) last--;
+  const all = [...slots.slice(0, last), ...[...owned.values()].filter(c => !placed.has(c.id)).sort(defaultOrder).map(c => c.id)];
+  const pages = Math.max(1, Math.ceil(all.length / per));
+  while (all.length < pages * per) all.push(null);
+  return { size, per, all, owned, planned, pages };
+}
+
+function saveLayout(b, all, size, planned) {
+  let last = all.length;
+  while (last && !all[last - 1]) last--;
+  const slots = all.slice(0, last);
+  const owned = new Set(store.cardsIn(b.id).map(c => c.id));
+  // Only keep planned cards that still sit in a pocket and aren't owned yet.
+  const keep = Object.fromEntries(Object.entries(planned).filter(([id]) => slots.includes(id) && !owned.has(id)));
+  store.setLayout(b.id, { size, slots, planned: keep });
+}
+
+const spreadSize = () => (innerWidth >= 900 ? 2 : 1); // two pages side by side on wide screens
+
+function pocketHTML(b, L, st, id, idx) {
+  const picked = st.pick === idx ? ' picked' : '';
+  if (!id) {
+    return `<div class="pocket vacant${picked}" data-slot="${idx}">${st.arrange
+      ? '<span class="plan-plus" title="Plan a card here">＋</span>' : ''}</div>`;
+  }
+  const own = L.owned.get(id);
+  const card = own || L.planned[id];
+  return `<div class="pocket${own ? '' : ' planned'}${picked}" data-slot="${idx}">
+    ${tile(card, { qty: own?.qty || 0, missing: true, times: true, addTo: b.id, inert: st.arrange })}
+    ${own ? '' : '<span class="planned-tag">Planned</span>'}
+    ${!own && st.arrange ? `<button class="unplan" data-unplan="${idx}" aria-label="Remove planned card">✕</button>` : ''}
+  </div>`;
+}
+
+function pagesHTML(b, L, st) {
+  const span = spreadSize();
+  st.page = Math.max(0, Math.min(st.page - (st.page % span), (L.pages - 1) - ((L.pages - 1) % span)));
+  const shown = Array.from({ length: span }, (_, i) => st.page + i).filter(p => p < L.pages);
+  const label = shown.length > 1 ? `Pages ${shown[0] + 1}–${shown.at(-1) + 1}` : `Page ${shown[0] + 1}`;
+  return `<div class="pages${st.arrange ? ' arranging' : ''}">
+    <div class="page-nav">
+      <button class="page-btn" data-page="-1" aria-label="Previous page"${st.page === 0 ? ' disabled' : ''}>‹</button>
+      <span>${label} <small>of ${L.pages}</small></span>
+      <button class="page-btn" data-page="1" aria-label="Next page"${st.page + span >= L.pages ? ' disabled' : ''}>›</button>
+    </div>
+    <div class="spread" id="spread" style="--pages:${span}">
+      ${shown.map(p => `<div class="page s${L.size}" style="--size:${L.size}">
+        ${L.all.slice(p * L.per, (p + 1) * L.per).map((id, i) => pocketHTML(b, L, st, id, p * L.per + i)).join('')}
+      </div>`).join('')}
+    </div>
+    ${st.arrange ? `<p class="arrange-hint">${st.pick == null
+      ? 'Tap a card, then tap the pocket it should go to. Tap ＋ in an empty pocket to plan a card you don’t have yet.'
+      : 'Now tap the pocket to move it to (or the same card to cancel).'}</p>` : ''}
+  </div>`;
+}
+
+function binderListHTML(b, all, f) {
+  const cards = all.filter(c => !f || c.name.toLowerCase().includes(f) || (c.setName || '').toLowerCase().includes(f));
+  const groups = new Map();
+  cards.forEach(c => { if (!groups.has(c.setId)) groups.set(c.setId, []); groups.get(c.setId).push(c); });
+  return [...groups].map(([setId, list]) => {
+    const s = setsCache?.byId.get(setId);
+    return `<div class="set-group">
+      <h3><span>${esc(s?.label || list[0].setName || setId)} <small>${list.length}${s ? ` / ${s.cards}` : ''}</small></span>
+        ${s ? `<button class="linkish" data-open-set="${esc(setId)}">Checklist →</button>` : ''}</h3>
+      <div class="grid">${list.sort(byNumber).map(c => tile(c, { qty: c.qty, times: true, addTo: b.id })).join('')}</div>
+    </div>`;
+  }).join('') || `<div class="empty">No cards match “${esc(f)}”.</div>`;
+}
 
 function renderBinderView() {
   const b = store.binder(ui.binderId);
   const el = $('#view-binder');
   if (!b) return showView('shelf');
+  const st = (binderUi[b.id] ||= { mode: 'pages', page: 0, arrange: false, pick: null });
   const filterValue = $('#binder-filter')?.value || '';
   const f = filterValue.trim().toLowerCase();
   const all = store.cardsIn(b.id);
-  const cards = all.filter(c => !f || c.name.toLowerCase().includes(f) || (c.setName || '').toLowerCase().includes(f));
-  remember(cards);
-  const groups = new Map();
-  cards.forEach(c => { if (!groups.has(c.setId)) groups.set(c.setId, []); groups.get(c.setId).push(c); });
+  remember(all);
+  const L = binderLayout(b);
+  remember(Object.values(L.planned));
+  const planned = L.all.filter(id => id && !L.owned.has(id)).length;
+  const toggle = (attr, items, current) => `<div class="pill-toggle">${items.map(([v, label]) =>
+    `<button class="chip${String(v) === String(current) ? ' on' : ''}" ${attr}="${v}">${label}</button>`).join('')}</div>`;
 
   const hadFocus = document.activeElement?.id === 'binder-filter';
   el.innerHTML = `
@@ -1200,23 +1291,44 @@ function renderBinderView() {
     </div>
     <div class="binder-hero">
       ${coverHTML(b, 'mini')}
-      <div><h2>${esc(b.name)}</h2><p class="meta">${all.length} unique · ${countIn(b.id)} total</p></div>
+      <div><h2>${esc(b.name)}</h2>
+        <p class="meta">${all.length} unique · ${countIn(b.id)} total${planned ? ` · ${planned} planned` : ''}</p></div>
     </div>
-    ${all.length ? `<input id="binder-filter" class="filter" placeholder="Filter this binder…" autocomplete="off" value="${esc(filterValue)}">` : ''}
-    ${!all.length
-      ? `<div class="empty">This binder is empty.<br>Go to <b>Add cards</b>, pick <b>${esc(b.name)}</b> and scan a card.</div>`
-      : [...groups].map(([setId, list]) => {
-        const s = setsCache?.byId.get(setId);
-        return `<div class="set-group">
-          <h3><span>${esc(s?.label || list[0].setName || setId)} <small>${list.length}${s ? ` / ${s.cards}` : ''}</small></span>
-            ${s ? `<button class="linkish" data-open-set="${esc(setId)}">Checklist →</button>` : ''}</h3>
-          <div class="grid">${list.sort(byNumber).map(c => tile(c, { qty: c.qty, times: true, addTo: b.id })).join('')}</div>
-        </div>`;
-      }).join('') || `<div class="empty">No cards match “${esc(f)}”.</div>`}`;
+    <div class="binder-tools">
+      ${toggle('data-mode', [['pages', 'Pages'], ['list', 'List']], st.mode)}
+      ${st.mode === 'pages' ? `
+        ${toggle('data-size', SIZES.map(n => [n, `${n}×${n}`]), L.size)}
+        <button class="chip arrange-btn${st.arrange ? ' on' : ''}" data-arrange>${st.arrange ? '✓ Done' : '✋ Arrange'}</button>` : ''}
+    </div>
+    ${st.mode === 'pages'
+      ? (all.length || planned || st.arrange ? pagesHTML(b, L, st)
+        : `<div class="empty">This binder is empty.<br>Add cards, or tap <b>✋ Arrange</b> to plan your pages first.</div>`)
+      : !all.length
+        ? `<div class="empty">This binder is empty.<br>Go to <b>Add cards</b>, pick <b>${esc(b.name)}</b> and scan a card.</div>`
+        : `<input id="binder-filter" class="filter" placeholder="Filter this binder…" autocomplete="off" value="${esc(filterValue)}">
+           ${binderListHTML(b, all, f)}`}`;
   if (hadFocus) {
     const input = $('#binder-filter');
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
+  }
+}
+
+// Turn the page: the new page slides in from the side it came from, with a slight page-turn tilt.
+async function turnPage(b, dir) {
+  const st = binderUi[b.id];
+  const L = binderLayout(b);
+  const next = st.page + dir * spreadSize();
+  if (next < 0 || next >= L.pages) return;
+  st.page = next;
+  st.pick = null;
+  renderBinderView();
+  const spread = $('#spread');
+  if (spread) {
+    done(spread.animate([
+      { transform: `perspective(1600px) translateX(${dir * 60}px) rotateY(${dir * -14}deg)`, opacity: 0 },
+      { transform: 'none', opacity: 1 },
+    ], { duration: 320, easing: 'cubic-bezier(.2, .8, .25, 1)' }));
   }
 }
 
@@ -1226,7 +1338,130 @@ $('#view-binder').addEventListener('click', e => {
   const edit = e.target.closest('[data-edit]');
   if (edit) return openCoverEditor(edit.dataset.edit);
   const set = e.target.closest('[data-open-set]');
-  if (set) openSetChecklist(set.dataset.openSet);
+  if (set) return openSetChecklist(set.dataset.openSet);
+
+  const b = store.binder(ui.binderId);
+  const st = b && binderUi[b.id];
+  if (!st) return;
+  const t = e.target.closest('button');
+  if (t?.dataset.mode) { st.mode = t.dataset.mode; st.arrange = false; st.pick = null; return renderBinderView(); }
+  if (t?.dataset.size) {
+    const L = binderLayout(b);
+    saveLayout(b, L.all, +t.dataset.size, L.planned);
+    st.page = 0;
+    return;
+  }
+  if (t?.hasAttribute('data-arrange')) { st.arrange = !st.arrange; st.pick = null; return renderBinderView(); }
+  if (t?.dataset.page) return turnPage(b, +t.dataset.page);
+
+  if (!st.arrange) return;
+  const L = binderLayout(b);
+  const unplan = e.target.closest('[data-unplan]');
+  if (unplan) {
+    L.all[+unplan.dataset.unplan] = null;
+    st.pick = null;
+    return saveLayout(b, L.all, L.size, L.planned);
+  }
+  const pocket = e.target.closest('.pocket');
+  if (!pocket) return;
+  const idx = +pocket.dataset.slot;
+  if (st.pick == null) {
+    if (L.all[idx]) { st.pick = idx; return renderBinderView(); }
+    return openPlanPicker(b, idx);
+  }
+  if (st.pick === idx) { st.pick = null; return renderBinderView(); }
+  // Swap the two pockets (moving onto an empty pocket just moves the card).
+  [L.all[st.pick], L.all[idx]] = [L.all[idx], L.all[st.pick]];
+  st.pick = null;
+  saveLayout(b, L.all, L.size, L.planned);
+  requestAnimationFrame(() => {
+    const landed = $(`#view-binder .pocket[data-slot="${idx}"]`);
+    if (landed) done(landed.animate([{ transform: 'scale(.85)' }, { transform: 'scale(1.06)' }, { transform: 'none' }], { duration: 260, easing: 'ease-out' }));
+  });
+});
+
+// Swipe left / right to turn pages.
+let swipeX = null;
+$('#view-binder').addEventListener('pointerdown', e => { if (e.target.closest('#spread')) swipeX = e.clientX; });
+$('#view-binder').addEventListener('pointerup', e => {
+  if (swipeX == null) return;
+  const dx = e.clientX - swipeX;
+  swipeX = null;
+  const b = store.binder(ui.binderId);
+  if (b && Math.abs(dx) > 60) turnPage(b, dx < 0 ? 1 : -1);
+});
+let resizeTimer;
+addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (ui.tab === 'binders' && ui.view === 'binder') renderBinderView(); }, 200);
+});
+
+// ＋ in an empty pocket: pick any card to plan there (you don't need to own it).
+function openPlanPicker(b, idx) {
+  ui.modal = { type: 'plan', binderId: b.id, idx, lang, results: [] };
+  $('#modal-body').innerHTML = `<div class="plan-picker">
+    <h3>Plan a card</h3>
+    <p class="meta">Pick the card that should go in this pocket. It shows greyed until you own it.</p>
+    <form class="searchbar" data-plan-search>
+      <svg class="sb-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input id="plan-q" placeholder="Card name, e.g. Umbreon" autocomplete="off" enterkeyhint="search">
+      <input id="plan-n" class="sb-number" placeholder="No." autocomplete="off" enterkeyhint="search">
+      <button type="submit" class="sr-only">Find</button>
+    </form>
+    <div class="pill-toggle plan-lang">${['en', 'ja'].map(l =>
+      `<button class="chip${l === lang ? ' on' : ''}" data-plan-lang="${l}">${l === 'en' ? 'EN' : 'JP'}</button>`).join('')}</div>
+    <div class="plan-results" id="plan-results"></div>
+  </div>`;
+  showModal();
+  $('#plan-q').focus();
+}
+
+async function runPlanSearch() {
+  const m = ui.modal;
+  const name = $('#plan-q').value.trim();
+  const [number = '', total = ''] = $('#plan-n').value.trim().split('/').map(s => s.trim().replace(/^0+(?=\d)/, ''));
+  if (!name && !number) return;
+  $('#plan-results').innerHTML = '<p class="meta">Searching…</p>';
+  const results = await findCards({ names: name ? [name] : [], number, total, language: m.lang });
+  if (ui.modal !== m) return;
+  m.results = results.slice(0, 60);
+  $('#plan-results').innerHTML = m.results.length
+    ? `<div class="grid">${m.results.map((c, i) => `<button class="pick-card" data-pick="${i}" title="${esc(c.name)}">
+        ${c.image ? `<img src="${esc(imgUrl(c))}" alt="${esc(c.name)}" loading="lazy">` : `<span>${esc(c.name)}</span>`}
+        <small>${esc([setsCache?.byId.get(c.setId)?.code, c.localId].filter(Boolean).join(' '))}</small>
+      </button>`).join('')}</div>`
+    : '<p class="meta">No cards found.</p>';
+}
+
+$('#modal-body').addEventListener('submit', e => {
+  if (!e.target.matches('[data-plan-search]')) return;
+  e.preventDefault();
+  runPlanSearch();
+});
+$('#modal-body').addEventListener('click', e => {
+  if (ui.modal?.type !== 'plan') return;
+  const m = ui.modal;
+  const l = e.target.closest('[data-plan-lang]')?.dataset.planLang;
+  if (l) {
+    m.lang = l;
+    $$('[data-plan-lang]').forEach(x => x.classList.toggle('on', x.dataset.planLang === l));
+    return runPlanSearch();
+  }
+  const pick = e.target.closest('[data-pick]');
+  if (!pick) return;
+  const card = m.results[+pick.dataset.pick];
+  const b = store.binder(m.binderId);
+  const L = binderLayout(b);
+  L.all[m.idx] = card.id;
+  const planned = { ...L.planned };
+  if (!L.owned.has(card.id)) {
+    planned[card.id] = { id: card.id, name: card.name, localId: card.localId, image: card.image, setId: card.setId, setName: card.setName, lang: card.lang };
+  }
+  // A card can only sit in one pocket: if it was planned elsewhere, that pocket empties.
+  L.all.forEach((id, i) => { if (id === card.id && i !== m.idx) L.all[i] = null; });
+  $('#modal').close();
+  saveLayout(b, L.all, L.size, planned);
+  toast(`Planned ${card.name} on page ${Math.floor(m.idx / L.per) + 1}`);
 });
 
 // ---------- cover editor ----------
