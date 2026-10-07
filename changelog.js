@@ -2,6 +2,14 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '2.2', date: '2026-10-07', title: 'Drag & drop',
+    items: [
+      'In ✋ Arrange you can now drag cards between pockets – with a mouse or your finger. Drop on a card to swap.',
+      'Hold a card at the left or right edge of the page to flip to the next page while dragging.',
+      'Tapping a card, then a pocket, still works too.',
+    ],
+  },
+  {
     version: '2.1', date: '2026-10-07', title: 'Binder pages & planning',
     items: [
       'Binders now show real pages – choose 2×2, 3×3 or 4×4 pockets per page. Two pages side by side on a computer, swipe or ‹ › to turn pages.',

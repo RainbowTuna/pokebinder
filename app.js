@@ -1,8 +1,8 @@
 
-import * as store from './data.js?v=16';
-import * as catalog from './catalog.js?v=16';
-import { CARD_IMAGE_RELAY } from './config.js?v=16';
-import { CHANGELOG } from './changelog.js?v=16';
+import * as store from './data.js?v=17';
+import * as catalog from './catalog.js?v=17';
+import { CARD_IMAGE_RELAY } from './config.js?v=17';
+import { CHANGELOG } from './changelog.js?v=17';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -1249,7 +1249,7 @@ function pagesHTML(b, L, st) {
       </div>`).join('')}
     </div>
     ${st.arrange ? `<p class="arrange-hint">${st.pick == null
-      ? 'Tap a card, then tap the pocket it should go to. Tap ＋ in an empty pocket to plan a card you don’t have yet.'
+      ? 'Drag a card to another pocket (or tap it, then tap where it goes). Hold it at the edge to change page. Tap ＋ in an empty pocket to plan a card.'
       : 'Now tap the pocket to move it to (or the same card to cancel).'}</p>` : ''}
   </div>`;
 }
@@ -1382,7 +1382,9 @@ $('#view-binder').addEventListener('click', e => {
 
 // Swipe left / right to turn pages.
 let swipeX = null;
-$('#view-binder').addEventListener('pointerdown', e => { if (e.target.closest('#spread')) swipeX = e.clientX; });
+$('#view-binder').addEventListener('pointerdown', e => {
+  if (e.target.closest('#spread') && !binderUi[ui.binderId]?.arrange) swipeX = e.clientX;
+});
 $('#view-binder').addEventListener('pointerup', e => {
   if (swipeX == null) return;
   const dx = e.clientX - swipeX;
@@ -1395,6 +1397,117 @@ addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => { if (ui.tab === 'binders' && ui.view === 'binder') renderBinderView(); }, 200);
 });
+
+// ---------- drag & drop (Arrange mode) ----------
+// Browsers let you drag pictures out of a page; that would hijack our drag, so turn it off here.
+$('#view-binder').addEventListener('dragstart', e => e.preventDefault());
+// Works with mouse and finger: grab a card, it follows the pointer, the pocket underneath lights
+// up, drop to move/swap. Hold it at the left/right edge to turn the page while dragging.
+// A press that doesn't move is still a tap (tap-a-card, tap-a-pocket keeps working).
+let drag = null;
+
+$('#view-binder').addEventListener('pointerdown', e => {
+  const b = store.binder(ui.binderId);
+  const st = b && binderUi[b.id];
+  if (!st?.arrange || e.button > 0 || e.target.closest('[data-unplan]')) return;
+  const pocket = e.target.closest('.pocket');
+  if (!pocket || pocket.classList.contains('vacant')) return;
+  drag = { b, from: +pocket.dataset.slot, pocket, pointer: e.pointerId, x0: e.clientX, y0: e.clientY, started: false };
+});
+
+addEventListener('pointermove', e => {
+  if (!drag || e.pointerId !== drag.pointer) return;
+  if (!drag.started) {
+    if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
+    startDrag();
+  }
+  moveDrag(e.clientX, e.clientY);
+});
+addEventListener('pointerup', e => { if (drag && e.pointerId === drag.pointer) endDrag(); });
+addEventListener('pointercancel', () => { if (drag) endDrag(true); });
+
+function startDrag() {
+  const rect = drag.pocket.getBoundingClientRect();
+  const ghost = Object.assign(document.createElement('div'), { className: 'drag-ghost' });
+  ghost.append(drag.pocket.querySelector('.tile').cloneNode(true));
+  Object.assign(ghost.style, { width: `${rect.width}px`, height: `${rect.height}px` });
+  document.body.append(ghost);
+  Object.assign(drag, { started: true, ghost, home: rect, offX: drag.x0 - rect.left, offY: drag.y0 - rect.top });
+  drag.pocket.classList.add('drag-from');
+  document.body.classList.add('dragging');
+  binderUi[drag.b.id].pick = null;
+  $$('#view-binder .pocket.picked').forEach(p => p.classList.remove('picked'));
+}
+
+function pocketAt(x, y) {
+  return document.elementFromPoint(x, y)?.closest('#view-binder .pocket') || null;
+}
+
+function moveDrag(x, y) {
+  drag.x = x;
+  drag.y = y;
+  drag.ghost.style.transform = `translate(${x - drag.offX}px, ${y - drag.offY}px) rotate(4deg) scale(1.06)`;
+  const target = pocketAt(x, y);
+  if (target !== drag.target) {
+    drag.target?.classList.remove('drop-target');
+    if (target && +target.dataset.slot !== drag.from) target.classList.add('drop-target');
+    drag.target = target;
+  }
+  // Holding at the edge of the pages turns the page (to drag a card to another page).
+  const spread = $('#spread')?.getBoundingClientRect();
+  const dir = !spread ? 0 : x < spread.left + 28 ? -1 : x > spread.right - 28 ? 1 : 0;
+  if (dir !== drag.edgeDir) {
+    clearTimeout(drag.edgeTimer);
+    drag.edgeDir = dir;
+    if (dir) {
+      drag.edgeTimer = setTimeout(async () => {
+        if (!drag) return;
+        await turnPage(drag.b, dir);
+        if (drag) { drag.edgeDir = 0; moveDrag(drag.x, drag.y); }
+      }, 650);
+    }
+  }
+}
+
+async function endDrag(cancelled = false) {
+  const d = drag;
+  drag = null;
+  if (!d.started) return; // a plain tap: the click handler takes it from here
+  clearTimeout(d.edgeTimer);
+  document.body.classList.remove('dragging');
+  d.target?.classList.remove('drop-target');
+  // The press ended as a drag, not a tap: swallow the click that may follow (but only right now,
+  // so it can never eat a later tap).
+  const swallow = ev => { ev.stopPropagation(); ev.preventDefault(); };
+  addEventListener('click', swallow, { capture: true, once: true });
+  setTimeout(() => removeEventListener('click', swallow, { capture: true }), 80);
+
+  const to = !cancelled && d.target ? +d.target.dataset.slot : null;
+  const from = d.ghost.getBoundingClientRect();
+  if (to == null || to === d.from) {
+    // Dropped outside: slide back home (if home is still on screen), then tidy up.
+    const home = $(`#view-binder .pocket[data-slot="${d.from}"]`)?.getBoundingClientRect();
+    if (home) {
+      await done(d.ghost.animate([{ transform: d.ghost.style.transform }, { transform: `translate(${home.left}px, ${home.top}px)` }],
+        { duration: 220, easing: 'ease-out', fill: 'forwards' }));
+    }
+    d.ghost.remove();
+    $$('#view-binder .drag-from').forEach(p => p.classList.remove('drag-from'));
+    return;
+  }
+  const L = binderLayout(d.b);
+  [L.all[d.from], L.all[to]] = [L.all[to], L.all[d.from]];
+  const dest = d.target.getBoundingClientRect();
+  // Settle the ghost into its new pocket, then save (which redraws the page).
+  await done(d.ghost.animate([
+    { transform: `translate(${from.left}px, ${from.top}px) rotate(4deg) scale(1.06)` },
+    { transform: `translate(${dest.left}px, ${dest.top}px) scale(${dest.width / from.width * 1.06})` },
+  ], { duration: 180, easing: 'ease-out', fill: 'forwards' }));
+  saveLayout(d.b, L.all, L.size, L.planned);
+  d.ghost.remove();
+  const landed = $(`#view-binder .pocket[data-slot="${to}"]`);
+  if (landed) done(landed.animate([{ transform: 'scale(1.08)' }, { transform: 'none' }], { duration: 220, easing: 'ease-out' }));
+}
 
 // ＋ in an empty pocket: pick any card to plan there (you don't need to own it).
 function openPlanPicker(b, idx) {
