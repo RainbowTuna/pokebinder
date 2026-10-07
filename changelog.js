@@ -2,6 +2,15 @@
 // Add an entry here with every release (and bump the ?v= numbers in index.html / app.js).
 export const CHANGELOG = [
   {
+    version: '2.3', date: '2026-10-07', title: 'You fill the pages',
+    items: [
+      'Binder pages now start empty – you decide where every card goes.',
+      'Cards in the binder that aren’t on a page yet wait in a “Not on a page yet” tray under the pages.',
+      'Tap ＋ in any empty pocket to put one of the binder’s cards there (or plan a card you don’t have yet).',
+      'In ✋ Arrange, drag cards from the tray onto the page – or drag them back to the tray (or tap ✕) to take them off.',
+    ],
+  },
+  {
     version: '2.2', date: '2026-10-07', title: 'Drag & drop',
     items: [
       'In ✋ Arrange you can now drag cards between pockets – with a mouse or your finger. Drop on a card to swap.',

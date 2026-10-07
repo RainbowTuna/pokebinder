@@ -630,3 +630,24 @@ body.dragging, body.dragging * { cursor: grabbing !important; user-select: none;
 .pocket.drag-from .tile { opacity: .25; animation: none; }
 .pocket.drop-target { outline: 3px dashed var(--accent); outline-offset: 2px; transform: scale(1.05); transition: transform .12s ease; }
 .pocket img, .drag-ghost img { -webkit-user-drag: none; user-select: none; }
+
+/* tray: cards in the binder that aren't on a page yet */
+.tray { margin-top: 22px; padding: 14px; border-radius: 12px; background: var(--slot); transition: box-shadow .15s ease; }
+.tray h4 { margin: 0 0 2px; font-size: 1rem; }
+.tray h4 small { color: var(--muted); font-weight: 600; margin-left: 4px; }
+.tray .meta { font-size: .85rem; margin-bottom: 10px; }
+.tray-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); }
+.tray-card { position: relative; aspect-ratio: 63 / 88; border-radius: 6px; }
+.tray-card .tile { width: 100%; height: 100%; border-radius: 6px; }
+.arranging .tray-card { cursor: grab; touch-action: none; }
+.arranging .tray-card .tile { animation: wiggle .9s ease-in-out infinite alternate; }
+.tray-card.picked { z-index: 3; transform: scale(1.08) translateY(-4px); box-shadow: 0 0 0 3px var(--accent), 0 14px 28px rgb(0 0 0 / .35); }
+.tray-card.picked .tile { animation: none; }
+.tray-card.drag-from .tile { opacity: .25; animation: none; }
+.tray.drop-target { outline: 3px dashed var(--accent); outline-offset: 3px; }
+.tray-done { text-align: center; color: var(--ok); font-weight: 700; margin: 18px 0 0; }
+.pocket.vacant { cursor: pointer; }
+.pocket.vacant .plan-plus { opacity: .45; }
+.pocket.vacant:hover .plan-plus { opacity: 1; color: var(--accent); transform: scale(1.2); }
+.picker-h { margin: 16px 0 4px; font-size: .95rem; }
+.picker-note { margin-top: 12px; }

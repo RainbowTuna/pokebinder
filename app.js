@@ -1,8 +1,8 @@
 
-import * as store from './data.js?v=17';
-import * as catalog from './catalog.js?v=17';
-import { CARD_IMAGE_RELAY } from './config.js?v=17';
-import { CHANGELOG } from './changelog.js?v=17';
+import * as store from './data.js?v=18';
+import * as catalog from './catalog.js?v=18';
+import { CARD_IMAGE_RELAY } from './config.js?v=18';
+import { CHANGELOG } from './changelog.js?v=18';
 
 const TARGET_KEY = 'pkbinder.target';
 const LANG_KEY = 'pkbinder.lang';
@@ -1185,9 +1185,9 @@ const defaultOrder = (a, b) => setDate(a).localeCompare(setDate(b)) || String(a.
 // ---------- binder pages ----------
 // A binder's layout: { size: 2 | 3 | 4 pockets per side, slots: [cardId | null, …], planned: { cardId: card } }.
 // slots says which card sits in which pocket (null = empty pocket). Planned cards are ones you
-// don't own yet, shown greyed in their pocket. Owned cards that haven't been placed follow
-// after the last placed card, so nothing ever goes missing.
-const binderUi = {}; // per binder: { mode: 'pages' | 'list', page, arrange, pick }
+// don't own yet, shown greyed in their pocket. Pages start empty: cards in the binder that
+// aren't on a page yet wait in the "Not on a page yet" tray until you put them in a pocket.
+const binderUi = {}; // per binder: { mode, page, arrange, pick } – pick: pocket index or 't:<cardId>' (from the tray)
 const SIZES = [2, 3, 4];
 
 function binderLayout(b) {
@@ -1199,10 +1199,12 @@ function binderLayout(b) {
   const placed = new Set(slots.filter(Boolean));
   let last = slots.length;
   while (last && !slots[last - 1]) last--;
-  const all = [...slots.slice(0, last), ...[...owned.values()].filter(c => !placed.has(c.id)).sort(defaultOrder).map(c => c.id)];
-  const pages = Math.max(1, Math.ceil(all.length / per));
+  const all = slots.slice(0, last);
+  let pages = Math.max(1, Math.ceil(all.length / per));
   while (all.length < pages * per) all.push(null);
-  return { size, per, all, owned, planned, pages };
+  if (!all.slice(-per).includes(null)) { pages++; while (all.length < pages * per) all.push(null); } // always a free pocket
+  const unplaced = [...owned.values()].filter(c => !placed.has(c.id)).sort(defaultOrder);
+  return { size, per, all, owned, planned, pages, unplaced };
 }
 
 function saveLayout(b, all, size, planned) {
@@ -1220,15 +1222,14 @@ const spreadSize = () => (innerWidth >= 900 ? 2 : 1); // two pages side by side 
 function pocketHTML(b, L, st, id, idx) {
   const picked = st.pick === idx ? ' picked' : '';
   if (!id) {
-    return `<div class="pocket vacant${picked}" data-slot="${idx}">${st.arrange
-      ? '<span class="plan-plus" title="Plan a card here">＋</span>' : ''}</div>`;
+    return `<div class="pocket vacant${picked}" data-slot="${idx}"><span class="plan-plus" title="Put a card here">＋</span></div>`;
   }
   const own = L.owned.get(id);
   const card = own || L.planned[id];
   return `<div class="pocket${own ? '' : ' planned'}${picked}" data-slot="${idx}">
     ${tile(card, { qty: own?.qty || 0, missing: true, times: true, addTo: b.id, inert: st.arrange })}
     ${own ? '' : '<span class="planned-tag">Planned</span>'}
-    ${!own && st.arrange ? `<button class="unplan" data-unplan="${idx}" aria-label="Remove planned card">✕</button>` : ''}
+    ${st.arrange ? `<button class="unplan" data-unplan="${idx}" aria-label="${own ? 'Take off the page' : 'Remove planned card'}" title="${own ? 'Take off the page' : 'Remove planned card'}">✕</button>` : ''}
   </div>`;
 }
 
@@ -1249,8 +1250,24 @@ function pagesHTML(b, L, st) {
       </div>`).join('')}
     </div>
     ${st.arrange ? `<p class="arrange-hint">${st.pick == null
-      ? 'Drag a card to another pocket (or tap it, then tap where it goes). Hold it at the edge to change page. Tap ＋ in an empty pocket to plan a card.'
-      : 'Now tap the pocket to move it to (or the same card to cancel).'}</p>` : ''}
+      ? 'Drag cards between pockets or from the tray below (or tap one, then tap where it goes). Hold at the edge to change page. ✕ takes a card off the page.'
+      : 'Now tap the pocket it should go in (or the same card to cancel).'}</p>` : ''}
+    ${trayHTML(b, L, st)}
+  </div>`;
+}
+
+// Cards in this binder that aren't on a page yet.
+function trayHTML(b, L, st) {
+  if (!L.unplaced.length) {
+    return L.owned.size ? '<p class="tray-done">✓ Every card in this binder is on a page.</p>' : '';
+  }
+  return `<div class="tray" id="tray">
+    <h4>Not on a page yet <small>${L.unplaced.length}</small></h4>
+    <p class="meta">${st.arrange ? 'Drag one onto an empty pocket, or tap it and then tap a pocket.'
+      : 'Tap ＋ in an empty pocket to put one there, or use ✋ Arrange to drag them in.'}</p>
+    <div class="tray-grid">${L.unplaced.map(c => `<div class="tray-card${st.pick === `t:${c.id}` ? ' picked' : ''}" data-tray="${esc(c.id)}">
+      ${tile(c, { qty: c.qty, times: true, addTo: b.id, inert: st.arrange })}
+    </div>`).join('')}</div>
   </div>`;
 }
 
@@ -1280,6 +1297,7 @@ function renderBinderView() {
   const L = binderLayout(b);
   remember(Object.values(L.planned));
   const planned = L.all.filter(id => id && !L.owned.has(id)).length;
+  const waiting = L.unplaced.length;
   const toggle = (attr, items, current) => `<div class="pill-toggle">${items.map(([v, label]) =>
     `<button class="chip${String(v) === String(current) ? ' on' : ''}" ${attr}="${v}">${label}</button>`).join('')}</div>`;
 
@@ -1292,7 +1310,7 @@ function renderBinderView() {
     <div class="binder-hero">
       ${coverHTML(b, 'mini')}
       <div><h2>${esc(b.name)}</h2>
-        <p class="meta">${all.length} unique · ${countIn(b.id)} total${planned ? ` · ${planned} planned` : ''}</p></div>
+        <p class="meta">${all.length} unique · ${countIn(b.id)} total${planned ? ` · ${planned} planned` : ''}${waiting && st.mode === 'pages' ? ` · ${waiting} not on a page` : ''}</p></div>
     </div>
     <div class="binder-tools">
       ${toggle('data-mode', [['pages', 'Pages'], ['list', 'List']], st.mode)}
@@ -1301,8 +1319,7 @@ function renderBinderView() {
         <button class="chip arrange-btn${st.arrange ? ' on' : ''}" data-arrange>${st.arrange ? '✓ Done' : '✋ Arrange'}</button>` : ''}
     </div>
     ${st.mode === 'pages'
-      ? (all.length || planned || st.arrange ? pagesHTML(b, L, st)
-        : `<div class="empty">This binder is empty.<br>Add cards, or tap <b>✋ Arrange</b> to plan your pages first.</div>`)
+      ? pagesHTML(b, L, st)
       : !all.length
         ? `<div class="empty">This binder is empty.<br>Go to <b>Add cards</b>, pick <b>${esc(b.name)}</b> and scan a card.</div>`
         : `<input id="binder-filter" class="filter" placeholder="Filter this binder…" autocomplete="off" value="${esc(filterValue)}">
@@ -1354,8 +1371,18 @@ $('#view-binder').addEventListener('click', e => {
   if (t?.hasAttribute('data-arrange')) { st.arrange = !st.arrange; st.pick = null; return renderBinderView(); }
   if (t?.dataset.page) return turnPage(b, +t.dataset.page);
 
-  if (!st.arrange) return;
   const L = binderLayout(b);
+  if (!st.arrange) {
+    const empty = e.target.closest('.pocket.vacant');
+    if (empty) openPlanPicker(b, +empty.dataset.slot);
+    return;
+  }
+  const fromTray = e.target.closest('[data-tray]');
+  if (fromTray) {
+    const key = `t:${fromTray.dataset.tray}`;
+    st.pick = st.pick === key ? null : key;
+    return renderBinderView();
+  }
   const unplan = e.target.closest('[data-unplan]');
   if (unplan) {
     L.all[+unplan.dataset.unplan] = null;
@@ -1370,8 +1397,9 @@ $('#view-binder').addEventListener('click', e => {
     return openPlanPicker(b, idx);
   }
   if (st.pick === idx) { st.pick = null; return renderBinderView(); }
+  if (typeof st.pick === 'string') L.all[idx] = st.pick.slice(2); // from the tray (whatever was there goes back to it)
   // Swap the two pockets (moving onto an empty pocket just moves the card).
-  [L.all[st.pick], L.all[idx]] = [L.all[idx], L.all[st.pick]];
+  else [L.all[st.pick], L.all[idx]] = [L.all[idx], L.all[st.pick]];
   st.pick = null;
   saveLayout(b, L.all, L.size, L.planned);
   requestAnimationFrame(() => {
@@ -1410,9 +1438,12 @@ $('#view-binder').addEventListener('pointerdown', e => {
   const b = store.binder(ui.binderId);
   const st = b && binderUi[b.id];
   if (!st?.arrange || e.button > 0 || e.target.closest('[data-unplan]')) return;
-  const pocket = e.target.closest('.pocket');
+  const tray = e.target.closest('[data-tray]');
+  const pocket = tray || e.target.closest('.pocket');
   if (!pocket || pocket.classList.contains('vacant')) return;
-  drag = { b, from: +pocket.dataset.slot, pocket, pointer: e.pointerId, x0: e.clientX, y0: e.clientY, started: false };
+  // from: a pocket index, or 't:<cardId>' for a card coming from the tray
+  const from = tray ? `t:${tray.dataset.tray}` : +pocket.dataset.slot;
+  drag = { b, from, pocket, pointer: e.pointerId, x0: e.clientX, y0: e.clientY, started: false };
 });
 
 addEventListener('pointermove', e => {
@@ -1439,8 +1470,9 @@ function startDrag() {
   $$('#view-binder .pocket.picked').forEach(p => p.classList.remove('picked'));
 }
 
+// What's under the pointer: a pocket, or the tray (to take a card off the page).
 function pocketAt(x, y) {
-  return document.elementFromPoint(x, y)?.closest('#view-binder .pocket') || null;
+  return document.elementFromPoint(x, y)?.closest('#view-binder .pocket, #tray') || null;
 }
 
 function moveDrag(x, y) {
@@ -1450,7 +1482,8 @@ function moveDrag(x, y) {
   const target = pocketAt(x, y);
   if (target !== drag.target) {
     drag.target?.classList.remove('drop-target');
-    if (target && +target.dataset.slot !== drag.from) target.classList.add('drop-target');
+    const same = target && (target.id === 'tray' ? typeof drag.from === 'string' : +target.dataset.slot === drag.from);
+    if (target && !same) target.classList.add('drop-target');
     drag.target = target;
   }
   // Holding at the edge of the pages turns the page (to drag a card to another page).
@@ -1482,11 +1515,21 @@ async function endDrag(cancelled = false) {
   addEventListener('click', swallow, { capture: true, once: true });
   setTimeout(() => removeEventListener('click', swallow, { capture: true }), 80);
 
-  const to = !cancelled && d.target ? +d.target.dataset.slot : null;
+  const fromTray = typeof d.from === 'string';
+  const onTray = !cancelled && d.target?.id === 'tray';
+  const to = !cancelled && d.target && !onTray ? +d.target.dataset.slot : null;
   const from = d.ghost.getBoundingClientRect();
+  if (onTray && !fromTray) {
+    // Dropped on the tray: take the card off the page.
+    const L = binderLayout(d.b);
+    L.all[d.from] = null;
+    d.ghost.remove();
+    return saveLayout(d.b, L.all, L.size, L.planned);
+  }
   if (to == null || to === d.from) {
     // Dropped outside: slide back home (if home is still on screen), then tidy up.
-    const home = $(`#view-binder .pocket[data-slot="${d.from}"]`)?.getBoundingClientRect();
+    const home = (fromTray ? $(`#view-binder [data-tray="${CSS.escape(d.from.slice(2))}"]`)
+      : $(`#view-binder .pocket[data-slot="${d.from}"]`))?.getBoundingClientRect();
     if (home) {
       await done(d.ghost.animate([{ transform: d.ghost.style.transform }, { transform: `translate(${home.left}px, ${home.top}px)` }],
         { duration: 220, easing: 'ease-out', fill: 'forwards' }));
@@ -1496,7 +1539,8 @@ async function endDrag(cancelled = false) {
     return;
   }
   const L = binderLayout(d.b);
-  [L.all[d.from], L.all[to]] = [L.all[to], L.all[d.from]];
+  if (fromTray) L.all[to] = d.from.slice(2); // whatever was there goes back to the tray
+  else [L.all[d.from], L.all[to]] = [L.all[to], L.all[d.from]];
   const dest = d.target.getBoundingClientRect();
   // Settle the ghost into its new pocket, then save (which redraws the page).
   await done(d.ghost.animate([
@@ -1509,12 +1553,21 @@ async function endDrag(cancelled = false) {
   if (landed) done(landed.animate([{ transform: 'scale(1.08)' }, { transform: 'none' }], { duration: 220, easing: 'ease-out' }));
 }
 
-// ＋ in an empty pocket: pick any card to plan there (you don't need to own it).
+// ＋ in an empty pocket: put one of this binder's cards there – or plan a card you don't own yet.
 function openPlanPicker(b, idx) {
-  ui.modal = { type: 'plan', binderId: b.id, idx, lang, results: [] };
+  const L = binderLayout(b);
+  ui.modal = { type: 'plan', binderId: b.id, idx, lang, results: [], waiting: L.unplaced };
   $('#modal-body').innerHTML = `<div class="plan-picker">
-    <h3>Plan a card</h3>
-    <p class="meta">Pick the card that should go in this pocket. It shows greyed until you own it.</p>
+    <h3>Put a card here</h3>
+    <p class="meta">Page ${Math.floor(idx / L.per) + 1}, pocket ${idx % L.per + 1}</p>
+    ${L.unplaced.length ? `<h4 class="picker-h">From this binder</h4>
+      <div class="plan-results"><div class="grid">${L.unplaced.map((c, i) => `<button class="pick-card" data-own="${i}" title="${esc(c.name)}">
+        ${c.image ? `<img src="${esc(imgUrl(c))}" alt="${esc(c.name)}" loading="lazy">` : `<span>${esc(c.name)}</span>`}
+        <small>${esc([setsCache?.byId.get(c.setId)?.code, c.localId].filter(Boolean).join(' '))}${c.qty > 1 ? ` · ×${c.qty}` : ''}</small>
+      </button>`).join('')}</div></div>`
+      : `<p class="meta picker-note">Every card in this binder is already on a page.</p>`}
+    <h4 class="picker-h">Plan a card you don’t have yet</h4>
+    <p class="meta">It shows greyed in this pocket until you get it.</p>
     <form class="searchbar" data-plan-search>
       <svg class="sb-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
       <input id="plan-q" placeholder="Card name, e.g. Umbreon" autocomplete="off" enterkeyhint="search">
@@ -1559,6 +1612,17 @@ $('#modal-body').addEventListener('click', e => {
     m.lang = l;
     $$('[data-plan-lang]').forEach(x => x.classList.toggle('on', x.dataset.planLang === l));
     return runPlanSearch();
+  }
+  const own = e.target.closest('[data-own]');
+  if (own) {
+    const card = m.waiting[+own.dataset.own];
+    const b = store.binder(m.binderId);
+    const L = binderLayout(b);
+    L.all[m.idx] = card.id;
+    $('#modal').close();
+    saveLayout(b, L.all, L.size, L.planned);
+    toast(`Put ${card.name} on page ${Math.floor(m.idx / L.per) + 1}`);
+    return;
   }
   const pick = e.target.closest('[data-pick]');
   if (!pick) return;
